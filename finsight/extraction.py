@@ -2,12 +2,129 @@ from pathlib import Path
 from datetime import datetime
 import io
 import re
+import shutil
 
 import pandas as pd
 
 SUPPORTED = {".pdf", ".xlsx", ".xls", ".csv", ".txt", ".docx"}
 
 DATE_PATTERN = re.compile(r"\b\d{1,2}/\d{1,2}/\d{4}\b")
+
+# Seuil de caractères par page en dessous duquel on considère la page
+# comme un scan (image). On déclenche alors l'OCR si disponible.
+OCR_MIN_CHARS_PER_PAGE = 40
+
+
+def ocr_available() -> bool:
+    """Retourne True si Tesseract et pytesseract sont disponibles."""
+    if shutil.which("tesseract") is None:
+        return False
+    try:
+        import pytesseract  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+_OCR_NUMBER_FIXES = str.maketrans({
+    # Fautes OCR fréquentes dans les nombres. On ne corrige que les
+    # chaînes qui ressemblent déjà à un nombre (voir _fix_ocr_number_token).
+    "O": "0",
+    "o": "0",
+    "l": "1",
+    "I": "1",
+    "S": "5",
+    "B": "8",
+})
+
+
+_NUMBER_TOKEN_PATTERN = re.compile(
+    r"(?<![A-Za-zÀ-ÿ])"
+    r"(?:\(\s*)?"
+    r"[-+]?[0-9OolISB][0-9OolISB.,\s  ]*"
+    r"(?:\s*\))?"
+    r"(?![A-Za-zÀ-ÿ])"
+)
+
+
+def _fix_ocr_number_token(token: str) -> str:
+    """Corrige O/l/I/S/B dans un token qui ressemble à un nombre OCR.
+
+    N'altère rien si le token ne contient aucun chiffre : on évite de
+    transformer un vrai mot (« Oui », « Lot »...) en nombre.
+    """
+    digits_present = any(ch.isdigit() for ch in token)
+    letters_present = any(ch.isalpha() for ch in token)
+    if not digits_present or not letters_present:
+        return token
+    return token.translate(_OCR_NUMBER_FIXES)
+
+
+def clean_ocr_text(text: str) -> str:
+    """Corrige les erreurs OCR fréquentes dans les nombres.
+
+    Ne modifie pas les libellés ni n'invente de valeurs : seuls les
+    tokens numériques comportant une lettre confusable (O, l, I, S, B)
+    sont corrigés.
+    """
+    if not text:
+        return text
+
+    def _replace(match):
+        return _fix_ocr_number_token(match.group(0))
+
+    cleaned = _NUMBER_TOKEN_PATTERN.sub(_replace, text)
+    # Supprimer les espaces insécables parasites qui gênent le découpage
+    # en colonnes (on garde les espaces normaux).
+    cleaned = cleaned.replace(" ", " ").replace(" ", " ")
+    return cleaned
+
+
+def _ocr_pdf_bytes(raw: bytes, languages: str = "fra+eng") -> str:
+    """OCR complet d'un PDF (toutes pages) via PyMuPDF + Tesseract.
+
+    Retourne une chaîne vide si Tesseract n'est pas disponible ou si
+    l'OCR échoue.
+    """
+    if not ocr_available():
+        return ""
+
+    try:
+        import pymupdf  # type: ignore
+    except ImportError:
+        try:
+            import fitz as pymupdf  # type: ignore
+        except ImportError:
+            return ""
+
+    try:
+        import pytesseract
+        from PIL import Image
+    except ImportError:
+        return ""
+
+    pages_text = []
+    try:
+        with pymupdf.open(stream=raw, filetype="pdf") as doc:
+            for page in doc:
+                # 300 dpi pour un bon compromis vitesse / fiabilité OCR.
+                matrix = pymupdf.Matrix(300 / 72, 300 / 72)
+                pix = page.get_pixmap(matrix=matrix, alpha=False)
+                img = Image.frombytes(
+                    "RGB", (pix.width, pix.height), pix.samples
+                )
+                try:
+                    page_text = pytesseract.image_to_string(
+                        img, lang=languages
+                    )
+                except pytesseract.TesseractError:
+                    # Repli silencieux sur anglais seul si fra manque.
+                    page_text = pytesseract.image_to_string(img, lang="eng")
+                pages_text.append(page_text)
+    except Exception:
+        return ""
+
+    return "\n".join(pages_text)
 
 
 def _make_dataframe(rows):
@@ -400,6 +517,7 @@ def extract_document(uploaded_file):
 
     text = ""
     tables = []
+    used_ocr = False
 
     if suffix == ".txt":
         text = raw.decode("utf-8-sig", errors="replace")
@@ -475,6 +593,29 @@ def extract_document(uploaded_file):
                 f"Impossible de lire ce PDF : {exc}"
             ) from exc
 
+        # OCR en repli si pdfplumber n'a rien renvoyé d'exploitable.
+        # Déclencheur : trop peu de caractères par page ET aucun record
+        # extrait des tableaux structurés ou des coordonnées.
+        try:
+            import pdfplumber  # noqa: F401
+            with pdfplumber.open(io.BytesIO(raw)) as _pdf:
+                page_count = max(1, len(_pdf.pages))
+        except Exception:
+            page_count = 1
+
+        text_density = len(text.strip()) / page_count
+
+        if (
+            text_density < OCR_MIN_CHARS_PER_PAGE
+            and not pdf_records
+            and not tables
+        ):
+            if ocr_available():
+                ocr_text = _ocr_pdf_bytes(raw)
+                if ocr_text:
+                    text = clean_ocr_text(ocr_text)
+                    used_ocr = True
+
 
     elif suffix == ".docx":
         try:
@@ -524,11 +665,17 @@ def extract_document(uploaded_file):
         records = _deduplicate_records(table_records + text_records)
 
 
+    if used_ocr:
+        for record in records:
+            record["ocr"] = True
+
     return {
         "text": text,
         "tables": tables,
         "records": records,
         "suffix": suffix,
+        "used_ocr": used_ocr,
+        "ocr_available": ocr_available(),
     }
 
 

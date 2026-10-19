@@ -16,6 +16,8 @@ from finsight.analysis import (
     build_diagnostic,
     complete_financial_values,
 )
+from finsight.sector import detect_out_of_scope_sector, SECTOR_MESSAGES
+from finsight.consistency import check_balance_sheet
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +133,9 @@ sample_path = (
 # ---------------------------------------------------------------------------
 # 1. Extraction
 # ---------------------------------------------------------------------------
+used_ocr = False
+ocr_available_flag = False
+
 if uploaded is not None:
     try:
         extracted = extract_document(uploaded)
@@ -138,6 +143,8 @@ if uploaded is not None:
         document_text = extracted["text"]
         tables = extracted["tables"]
         extracted_records = extracted.get("records", [])
+        used_ocr = extracted.get("used_ocr", False)
+        ocr_available_flag = extracted.get("ocr_available", False)
         source_name = uploaded.name
 
         source_signature = hashlib.sha256(
@@ -180,6 +187,36 @@ if not document_text.strip():
 
 
 st.caption(f"Document chargé : {source_name}")
+
+# -----------------------------------------------------------------------
+# Avertissements OCR et détection de secteur hors périmètre.
+# -----------------------------------------------------------------------
+if used_ocr:
+    st.warning(
+        "📷 Valeurs issues de l'OCR : vérifiez-les attentivement. "
+        "Les erreurs de reconnaissance (O/0, l/1, espaces parasites) "
+        "sont fréquentes sur les documents scannés."
+    )
+elif uploaded is not None and uploaded.name.lower().endswith(".pdf") and not document_text.strip() and not ocr_available_flag:
+    st.info(
+        "PDF scanné : installez Tesseract pour l'OCR "
+        "(https://github.com/UB-Mannheim/tesseract/wiki). "
+        "L'application continue de fonctionner, "
+        "mais aucun texte n'a pu être extrait automatiquement."
+    )
+
+_scope_warning = detect_out_of_scope_sector(document_text)
+if _scope_warning:
+    st.error(
+        "⚠️ Document hors périmètre détecté — secteur "
+        f"« {_scope_warning['sector']} ».\n\n"
+        f"{SECTOR_MESSAGES[_scope_warning['sector']]}\n\n"
+        f"Indices rencontrés : {', '.join(_scope_warning['matches'][:5])}."
+    )
+    st.info(
+        "Vous pouvez continuer, mais les ratios ne seront pas pertinents "
+        "pour ce type de bilan."
+    )
 
 with st.expander("Aperçu du texte extrait"):
     st.text(
@@ -484,9 +521,23 @@ if submitted:
         )
 
     # -----------------------------------------------------------------------
+    # 6.2bis Contrôles de cohérence comptable
+    # -----------------------------------------------------------------------
+    st.header("3. Contrôles de cohérence")
+
+    checks = check_balance_sheet(completed_values)
+    for check in checks:
+        if check["status"] == "ok":
+            st.success(f"✅ {check['name']} — {check['detail']}")
+        elif check["status"] == "warning":
+            st.warning(f"⚠️ {check['name']} — {check['detail']}")
+        else:
+            st.info(f"⏭️ {check['name']} — {check['detail']}")
+
+    # -----------------------------------------------------------------------
     # 6.3 Résultats regroupés par famille
     # -----------------------------------------------------------------------
-    st.header("3. Résultats")
+    st.header("4. Résultats")
 
     for family_name, family_ratios in ratio_groups:
         st.subheader(family_name)
@@ -503,7 +554,7 @@ if submitted:
     # -----------------------------------------------------------------------
     # 6.4 Interprétation regroupée par famille
     # -----------------------------------------------------------------------
-    st.header("4. Interprétation")
+    st.header("5. Interprétation")
 
     for family_name, family_ratios in ratio_groups:
         st.subheader(family_name)
@@ -528,7 +579,7 @@ if submitted:
     # -----------------------------------------------------------------------
     # 6.5 Diagnostic financier et conclusion globale
     # -----------------------------------------------------------------------
-    st.header("5. Diagnostic financier indicatif")
+    st.header("6. Diagnostic financier indicatif")
 
     left, right = st.columns(2)
 
@@ -589,6 +640,7 @@ if submitted:
             }
             for ratio in ordered_ratios
         ],
+        "consistency_checks": checks,
         "diagnostic": diagnostic,
         "disclaimer": (
             "Analyse pédagogique indicative. Vérifier les données extraites, "
@@ -624,7 +676,7 @@ if submitted:
     # -----------------------------------------------------------------------
     # 8. Exports
     # -----------------------------------------------------------------------
-    st.header("6. Exporter les résultats")
+    st.header("7. Exporter les résultats")
 
     c1, c2 = st.columns(2)
 
