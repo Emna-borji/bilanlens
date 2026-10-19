@@ -26,17 +26,14 @@ def load(path):
 
 
 def _tesseract_available() -> bool:
-    if shutil.which("tesseract") is None:
-        return False
+    # On délègue au détecteur de l'application pour que les tests OCR
+    # trouvent Tesseract via les chemins d'installation standards, pas
+    # seulement sur le PATH du processus.
     try:
-        import pytesseract  # noqa: F401
-    except ImportError:
+        from finsight.extraction import ocr_available
+        return ocr_available()
+    except Exception:
         return False
-    try:
-        import pdf2image  # noqa: F401
-    except ImportError:
-        return False
-    return True
 
 
 TESSERACT_AVAILABLE = _tesseract_available()

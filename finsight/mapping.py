@@ -34,6 +34,10 @@ ALIASES = {
         "total actif", "total actifs", "total des actifs",
         "total de l'actif", "total général de l'actif", "total assets",
         "total du bilan", "total general du bilan",
+        "total des capitaux propres et passifs",
+        "total capitaux propres et passifs",
+        "total des capitaux propres et des passifs",
+        "total equity and liabilities",
     ],
     "inventory": [
         "stocks", "stock", "stocks nets", "stocks de marchandises",
