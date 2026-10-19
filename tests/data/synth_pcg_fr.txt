@@ -1,0 +1,40 @@
+EXEMPLE PÉDAGOGIQUE SYNTHÉTIQUE — Société PCG Alpha SA (France)
+Exercice clos le 31/12/2025
+Comptes établis selon le Plan Comptable Général (PCG) — en milliers d'euros
+
+ACTIF
+Immobilisations corporelles : 5 500
+Immobilisations incorporelles : 400
+Immobilisations financières : 300
+Actif immobilisé : 6 200
+
+Stocks et en-cours : 1 800
+Créances d'exploitation : 2 100
+Trésorerie et équivalents de trésorerie : 900
+Actif circulant : 4 800
+
+Total actif : 11 000
+
+PASSIF
+Capital : 3 000
+Réserves : 1 500
+Résultat de l'exercice : 1 200
+Capitaux propres : 5 700
+
+Emprunts et dettes financières : 2 600
+Dettes à long terme : 2 600
+
+Dettes fournisseurs : 1 500
+Dettes fiscales et sociales : 800
+Dettes à court terme : 2 700
+
+Total des dettes : 5 300
+Total passif et capitaux propres : 11 000
+
+COMPTE DE RÉSULTAT
+Chiffre d'affaires : 18 000
+Coût des ventes : 10 500
+Résultat d'exploitation : 2 100
+Résultat net : 1 200
+
+Note : données fictives créées uniquement pour tester le logiciel.

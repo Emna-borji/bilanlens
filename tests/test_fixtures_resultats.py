@@ -1,47 +1,13 @@
 """Tests contre les valeurs de RESULTATS_ATTENDUS.txt (test1 à test3)."""
 import pytest
 
-from finsight.extraction import extract_document
-from finsight.mapping import map_candidates
-from finsight.analysis import calculate_ratios, complete_financial_values
-
 from conftest import load
+from _pipeline import run_pipeline
 
 
 def _run(file_name):
-    """Pipeline extraction → mapping → ratios pour un fichier donné.
-
-    Garde la dernière période si plusieurs sont présentes.
-    """
-    extracted = extract_document(load(file_name))
-    candidates = map_candidates(
-        extracted["text"],
-        records=extracted.get("records") or None,
-    )
-
-    periods = {c["period"] for c in candidates if c.get("period")}
-    if periods:
-        # Trier dates jj/mm/aaaa en ordre croissant et garder la dernière.
-        from datetime import datetime
-
-        def to_date(p):
-            try:
-                return datetime.strptime(p, "%d/%m/%Y").date()
-            except Exception:
-                return datetime.min.date()
-
-        latest = max(periods, key=to_date)
-        candidates = [c for c in candidates if c.get("period") == latest]
-
-    values = {}
-    for c in candidates:
-        key = c.get("key")
-        if key and key not in values:
-            values[key] = c["value"]
-
-    completed = complete_financial_values(values)
-    ratios = {r["key"]: r["value"] for r in calculate_ratios(completed)}
-    return completed, ratios
+    values, ratios, _checks, _extra = run_pipeline(load(file_name))
+    return values, ratios
 
 
 # ---------------------------------------------------------------------------

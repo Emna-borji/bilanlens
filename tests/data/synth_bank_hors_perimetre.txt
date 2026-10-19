@@ -1,0 +1,32 @@
+EXEMPLE PÉDAGOGIQUE SYNTHÉTIQUE — Banque Delta SA (hors périmètre)
+Bilan au 31/12/2025
+Montants en milliers de dinars tunisiens
+
+ACTIF
+Caisse et avoirs auprès de la banque centrale : 850 000
+Créances sur les établissements de crédit : 1 200 000
+Créances sur la clientèle : 4 500 000
+Portefeuille titres commercial : 350 000
+Portefeuille d'investissement : 1 100 000
+Immobilisations : 180 000
+Total actif : 8 180 000
+
+PASSIF
+Dépôts des établissements de crédit : 900 000
+Dépôts de la clientèle : 5 600 000
+Emprunts et ressources spéciales : 400 000
+Fonds propres réglementaires : 650 000
+Capital : 300 000
+Réserves : 200 000
+Résultat de l'exercice : 130 000
+
+ÉTAT DE RÉSULTAT
+Produit net bancaire : 420 000
+Marge d'intérêt : 260 000
+Commissions bancaires : 110 000
+Résultat net : 130 000
+
+Ratios réglementaires rappelés : ratio de solvabilité, ratio Tier 1,
+coefficient d'exploitation bancaire.
+
+Note : données fictives créées uniquement pour tester le logiciel.

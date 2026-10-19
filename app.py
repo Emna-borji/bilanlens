@@ -296,6 +296,7 @@ else:
 # Préparation des valeurs détectées et des doublons
 # ---------------------------------------------------------------------------
 defaults = {}
+default_ranks = {}
 ambiguous_fields = {}
 
 for candidate in analysis_candidates:
@@ -307,11 +308,11 @@ for candidate in analysis_candidates:
     if key not in LABELS:
         continue
 
-    if key not in defaults:
+    rank = candidate.get("rank", 0)
+    if key not in defaults or rank > default_ranks.get(key, -1):
         defaults[key] = candidate["value"]
-        ambiguous_fields[key] = [candidate]
-    else:
-        ambiguous_fields[key].append(candidate)
+        default_ranks[key] = rank
+    ambiguous_fields.setdefault(key, []).append(candidate)
 
 
 # ---------------------------------------------------------------------------

@@ -15,15 +15,46 @@ DATE_PATTERN = re.compile(r"\b\d{1,2}/\d{1,2}/\d{4}\b")
 OCR_MIN_CHARS_PER_PAGE = 40
 
 
+_TESSERACT_FALLBACK_PATHS = [
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    "/opt/homebrew/bin/tesseract",
+    "/usr/local/bin/tesseract",
+    "/usr/bin/tesseract",
+]
+
+
+def _find_tesseract_binary():
+    """Localise tesseract via PATH, puis via les chemins standards."""
+    found = shutil.which("tesseract")
+    if found:
+        return found
+    for candidate in _TESSERACT_FALLBACK_PATHS:
+        if Path(candidate).exists():
+            return candidate
+    return None
+
+
 def ocr_available() -> bool:
     """Retourne True si Tesseract et pytesseract sont disponibles."""
-    if shutil.which("tesseract") is None:
+    if _find_tesseract_binary() is None:
         return False
     try:
         import pytesseract  # noqa: F401
     except ImportError:
         return False
     return True
+
+
+def _configure_pytesseract(module):
+    """Pointe pytesseract vers le binaire Tesseract trouvé."""
+    binary = _find_tesseract_binary()
+    if not binary:
+        return
+    # pytesseract expose tesseract_cmd soit sur le module lui-même,
+    # soit sur un attribut interne `pytesseract` selon la version.
+    inner = getattr(module, "pytesseract", module)
+    inner.tesseract_cmd = binary
 
 
 _OCR_NUMBER_FIXES = str.maketrans({
@@ -102,6 +133,8 @@ def _ocr_pdf_bytes(raw: bytes, languages: str = "fra+eng") -> str:
         from PIL import Image
     except ImportError:
         return ""
+
+    _configure_pytesseract(pytesseract)
 
     pages_text = []
     try:

@@ -1,0 +1,50 @@
+EXEMPLE PÉDAGOGIQUE SYNTHÉTIQUE — Société Pièges SA (Tunisie)
+Exercice clos le 31/12/2025
+Montants en milliers de dinars tunisiens
+
+Ce document place volontairement AVANT les vrais totaux :
+  - des lignes « Autres ... » (qui ne doivent pas remplacer les totaux),
+  - une ligne « Total ... et ... » (qui n'est pas le total voulu).
+
+BILAN — ACTIFS
+Autres immobilisations : 500
+Total immobilisations et autres actifs : 7 000
+Immobilisations nettes : 6 400
+
+Autres stocks : 150
+Stocks : 1 400
+Autres créances : 300
+Créances clients : 1 100
+Autres disponibilités : 100
+Trésorerie : 400
+Total autres actifs courants : 550
+Total des actifs courants : 2 900
+
+Total actif : 9 300
+
+BILAN — CAPITAUX PROPRES ET PASSIFS
+Autres réserves : 400
+Réserves : 1 600
+Résultat de l'exercice : 500
+Capital social : 1 400
+Total passif et capitaux propres : 9 300
+Total des capitaux propres : 3 500
+
+Autres dettes financières : 300
+Dettes financières à long terme : 2 800
+
+Autres dettes d'exploitation : 200
+Fournisseurs et comptes rattachés : 1 800
+Dettes fiscales et sociales : 1 200
+Total des passifs courants : 3 000
+
+Total des dettes : 5 800
+
+COMPTE DE RÉSULTAT
+Autres produits : 150
+Chiffre d'affaires : 11 500
+Coût des ventes : 7 200
+Résultat d'exploitation : 1 100
+Résultat net : 500
+
+Note : données fictives créées uniquement pour tester le logiciel.

@@ -1,0 +1,40 @@
+SYNTHETIC EDUCATIONAL EXAMPLE — IFRS Beta Ltd (United Kingdom)
+Financial statements for the year ended 31/12/2025
+Amounts in thousands of pounds sterling (GBP)
+
+STATEMENT OF FINANCIAL POSITION
+Non-current assets
+Property, plant and equipment: 4 200
+Total non-current assets: 4 200
+
+Current assets
+Inventories: 1 600
+Trade and other receivables: 1 400
+Cash and cash equivalents: 800
+Total current assets: 3 800
+
+Total assets: 8 000
+
+Equity
+Share capital: 1 500
+Reserves: 1 100
+Profit for the year: 400
+Total equity: 3 000
+
+Non-current liabilities
+Borrowings: 2 400
+Total non-current liabilities: 2 400
+
+Current liabilities
+Trade and other payables: 2 000
+Current liabilities: 2 600
+
+Total liabilities: 5 000
+
+INCOME STATEMENT
+Revenue: 12 000
+Cost of sales: 7 500
+Operating profit: 650
+Profit for the year: 400
+
+Note: fictional data used only to test the software.
