@@ -1,4 +1,4 @@
-# FinSight — Assistant d'analyse financière
+﻿# BilanLens — Assistant d'analyse financière
 
 Mini-projet pédagogique Streamlit : importer un bilan ou un rapport
 financier, identifier les postes comptables, calculer des ratios et
@@ -13,12 +13,12 @@ Seul l'OCR (optionnel) utilise un modèle entraîné externe (Tesseract).
 **Dans le périmètre.** Sociétés industrielles et commerciales :
 - normes SCF tunisien, PCG français, IFRS anglais ;
 - formats PDF (texte ou scanné via OCR), XLSX, CSV, TXT, DOCX ;
-- bilans sur plusieurs exercices (N, N-1, N-2…) : FinSight choisit la
+- bilans sur plusieurs exercices (N, N-1, N-2…) : BilanLens choisit la
   période la plus récente par défaut.
 
 **Hors périmètre.** Les banques et les assurances ont une structure de
 bilan différente (dépôts de clientèle, provisions techniques, produit
-net bancaire…). FinSight les détecte par règles et affiche un
+net bancaire…). BilanLens les détecte par règles et affiche un
 avertissement : les ratios industriels n'y sont pas pertinents.
 
 ## Fonctionnalités
@@ -72,7 +72,7 @@ L'OCR nécessite le binaire Tesseract (langues `fra` et `eng`).
   Puis télécharger `fra.traineddata` depuis
   [github.com/tesseract-ocr/tessdata](https://github.com/tesseract-ocr/tessdata/raw/main/fra.traineddata)
   et le copier dans `C:\Program Files\Tesseract-OCR\tessdata\`.
-  FinSight détecte automatiquement le binaire aux emplacements standards.
+  BilanLens détecte automatiquement le binaire aux emplacements standards.
 
 - **macOS** : `brew install tesseract tesseract-lang`
 
@@ -81,7 +81,7 @@ L'OCR nécessite le binaire Tesseract (langues `fra` et `eng`).
   sudo apt install tesseract-ocr tesseract-ocr-fra tesseract-ocr-eng
   ```
 
-Si Tesseract est absent, FinSight continue de fonctionner : les PDF
+Si Tesseract est absent, BilanLens continue de fonctionner : les PDF
 scannés produiront un message « installez Tesseract pour l'OCR » et
 les tests OCR seront automatiquement sautés.
 
@@ -116,14 +116,14 @@ pytest -v -m "not real and not ocr"
   SOTUVER, Monoprix, SFBT, Délice Holding, Ciments de Bizerte,
   états financiers annuels individuels 2024.
 - Les bilans synthétiques (`tests/data/synth_*`, `test1-3_*`) sont
-  **fictifs** et créés uniquement pour tester FinSight. Les montants et
+  **fictifs** et créés uniquement pour tester BilanLens. Les montants et
   les dénominations ne correspondent à aucune société réelle.
 
 ## Structure du dépôt
 
 ```
 app.py                      # Interface Streamlit
-finsight/
+bilanlens/
   extraction.py             # Lecture des fichiers (PDF, XLSX, CSV, DOCX)
                             # + OCR en repli pour les PDF scannés.
   mapping.py                # Alias et rang des postes comptables.
@@ -174,7 +174,7 @@ Les seuils d'interprétation sont indicatifs et varient selon le secteur.
 
 - Les PDF à mise en forme très dense (3 colonnes imbriquées, notes
   inline, montants concaténés par pdfplumber) peuvent ne pas être
-  parfaitement extraits. FinSight signale alors les postes manquants.
+  parfaitement extraits. BilanLens signale alors les postes manquants.
 - L'OCR dépend de la qualité du scan : les erreurs fréquentes dans les
   nombres (O/0, l/1, I/1, S/5, B/8) sont corrigées heuristiquement,
   mais le résultat doit toujours être vérifié par l'utilisateur.

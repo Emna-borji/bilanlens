@@ -1,4 +1,4 @@
-import io
+﻿import io
 import shutil
 from pathlib import Path
 
@@ -30,7 +30,7 @@ def _tesseract_available() -> bool:
     # trouvent Tesseract via les chemins d'installation standards, pas
     # seulement sur le PATH du processus.
     try:
-        from finsight.extraction import ocr_available
+        from bilanlens.extraction import ocr_available
         return ocr_available()
     except Exception:
         return False

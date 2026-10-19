@@ -1,10 +1,10 @@
-"""Bilans synthétiques : formats variés (PCG, IFRS, Excel, CSV, UPPERCASE,
+﻿"""Bilans synthétiques : formats variés (PCG, IFRS, Excel, CSV, UPPERCASE,
 pièges autour des totaux)."""
 import pytest
 
 from conftest import load
 from _pipeline import run_pipeline
-from finsight.consistency import has_warnings
+from bilanlens.consistency import has_warnings
 
 
 # ---------------------------------------------------------------------------

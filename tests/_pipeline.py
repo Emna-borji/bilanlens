@@ -1,10 +1,10 @@
-"""Pipeline de test commun : charge un fichier → ratios + checks."""
+﻿"""Pipeline de test commun : charge un fichier → ratios + checks."""
 from datetime import datetime
 
-from finsight.extraction import extract_document
-from finsight.mapping import map_candidates
-from finsight.analysis import complete_financial_values, calculate_ratios
-from finsight.consistency import check_balance_sheet
+from bilanlens.extraction import extract_document
+from bilanlens.mapping import map_candidates
+from bilanlens.analysis import complete_financial_values, calculate_ratios
+from bilanlens.consistency import check_balance_sheet
 
 
 def _to_date(period):

@@ -1,5 +1,5 @@
-"""Détecteur hors périmètre (banques, assurances) — tests unitaires."""
-from finsight.sector import detect_out_of_scope_sector
+﻿"""Détecteur hors périmètre (banques, assurances) — tests unitaires."""
+from bilanlens.sector import detect_out_of_scope_sector
 
 
 def test_industrial_text_is_in_scope():

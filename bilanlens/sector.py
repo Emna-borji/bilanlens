@@ -1,4 +1,4 @@
-"""Détection par règles de bilans hors périmètre (banques, assurances).
+﻿"""Détection par règles de bilans hors périmètre (banques, assurances).
 
 Pas d'IA : repose sur des libellés caractéristiques du bilan bancaire ou
 du bilan d'assurance. L'objectif n'est pas la classification sectorielle,
@@ -118,7 +118,7 @@ SECTOR_MESSAGES = {
         "Ce document ressemble à un bilan bancaire. La structure de bilan "
         "d'une banque diffère sensiblement d'une société industrielle ou "
         "commerciale (dépôts de clientèle, créances sur la clientèle, "
-        "produit net bancaire…). Les ratios proposés par FinSight ne sont "
+        "produit net bancaire…). Les ratios proposés par BilanLens ne sont "
         "pas adaptés : utilisez des indicateurs bancaires dédiés "
         "(ratio de solvabilité, coefficient d'exploitation, marge d'intérêt…)."
     ),
@@ -126,6 +126,6 @@ SECTOR_MESSAGES = {
         "Ce document ressemble à un bilan d'assurance. Les provisions "
         "techniques, les primes acquises et le ratio combiné ne se lisent "
         "pas comme les postes d'une société industrielle ou commerciale. "
-        "Les ratios proposés par FinSight ne sont pas adaptés."
+        "Les ratios proposés par BilanLens ne sont pas adaptés."
     ),
 }

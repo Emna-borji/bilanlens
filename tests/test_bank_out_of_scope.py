@@ -1,7 +1,7 @@
-"""Vérifie qu'un bilan de banque est signalé hors périmètre."""
+﻿"""Vérifie qu'un bilan de banque est signalé hors périmètre."""
 from conftest import load
 from _pipeline import run_pipeline
-from finsight.sector import detect_out_of_scope_sector
+from bilanlens.sector import detect_out_of_scope_sector
 
 
 def test_synthetic_bank_bilan_detected_as_bank():

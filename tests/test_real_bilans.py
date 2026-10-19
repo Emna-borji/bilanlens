@@ -1,4 +1,4 @@
-"""Tests sur des bilans réels publics (bvmt.com.tn).
+﻿"""Tests sur des bilans réels publics (bvmt.com.tn).
 
 Ces tests portent sur des sociétés industrielles ou commerciales
 tunisiennes et vérifient (a) les ratios cibles connus et (b) que le
@@ -9,8 +9,8 @@ import pytest
 
 from conftest import load
 from _pipeline import run_pipeline
-from finsight.consistency import has_warnings
-from finsight.sector import detect_out_of_scope_sector
+from bilanlens.consistency import has_warnings
+from bilanlens.sector import detect_out_of_scope_sector
 
 
 pytestmark = pytest.mark.real

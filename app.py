@@ -1,4 +1,4 @@
-
+﻿
 from datetime import datetime
 import hashlib
 import json
@@ -7,29 +7,29 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from finsight.extraction import extract_document
-from finsight.mapping import map_candidates, LABELS
-from finsight.analysis import (
+from bilanlens.extraction import extract_document
+from bilanlens.mapping import map_candidates, LABELS
+from bilanlens.analysis import (
     calculate_ratios,
     format_ratio,
     interpret_ratio,
     build_diagnostic,
     complete_financial_values,
 )
-from finsight.sector import detect_out_of_scope_sector, SECTOR_MESSAGES
-from finsight.consistency import check_balance_sheet
+from bilanlens.sector import detect_out_of_scope_sector, SECTOR_MESSAGES
+from bilanlens.consistency import check_balance_sheet
 
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="FinSight | Analyse financière",
+    page_title="BilanLens | Analyse financière",
     page_icon="📊",
     layout="wide",
 )
 
-st.title("📊 FinSight")
+st.title("📊 BilanLens")
 st.subheader("Assistant d'analyse financière")
 
 st.write(
@@ -685,7 +685,7 @@ if submitted:
         st.download_button(
             "Exporter les résultats en JSON",
             data=json_bytes,
-            file_name="finsight_resultats.json",
+            file_name="bilanlens_resultats.json",
             mime="application/json",
         )
 
@@ -695,7 +695,7 @@ if submitted:
             data=csv_df.to_csv(
                 index=False,
             ).encode("utf-8-sig"),
-            file_name="finsight_ratios.csv",
+            file_name="bilanlens_ratios.csv",
             mime="text/csv",
         )
 

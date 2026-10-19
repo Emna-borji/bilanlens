@@ -1,7 +1,7 @@
-"""Contrôles de cohérence du bilan — tests unitaires."""
+﻿"""Contrôles de cohérence du bilan — tests unitaires."""
 import pytest
 
-from finsight.consistency import check_balance_sheet, has_warnings
+from bilanlens.consistency import check_balance_sheet, has_warnings
 
 
 def _by_name(checks):
