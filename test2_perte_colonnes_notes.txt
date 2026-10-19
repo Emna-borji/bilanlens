@@ -1,0 +1,28 @@
+EXEMPLE PÉDAGOGIQUE SYNTHÉTIQUE — Société Test Beta SARL
+Montants exprimés en milliers de dinars tunisiens
+
+BILAN                                      Notes     31/12/2025     31/12/2024
+Total des actifs non courants              (B.1)          3 600          3 400
+Stocks nets                                (B.2)            900            800
+Clients et comptes rattachés nets          (B.3)          1 100          1 000
+Liquidités et équivalents de liquidités    (B.4)            400            700
+Total des actifs courants                                 2 400          2 500
+Total des actifs                                          6 000          5 900
+
+Capital social                             (B.5)          1 000          1 000
+Réserves                                                    750            700
+Résultat de l'exercice                                     (250)            50
+Total des capitaux propres avant affectation              1 500          1 750
+Emprunts et dettes assimilées              (B.6)          1 700          1 900
+Total des passifs non courants                            1 700          1 900
+Fournisseurs et comptes rattachés          (B.7)          1 900          1 500
+Concours bancaires                         (B.8)            900            750
+Total des passifs courants                                2 800          2 250
+Total des capitaux propres et des passifs                 6 000          5 900
+
+ÉTAT DE RÉSULTAT                           Notes     31/12/2025     31/12/2024
+Revenus                                    (R.1)          8 000          8 500
+Résultat d'exploitation                                     (60)           280
+Résultat net de l'exercice                                 (250)            50
+
+Note : données fictives créées uniquement pour tester le logiciel.

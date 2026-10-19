@@ -1,0 +1,25 @@
+EXEMPLE PÉDAGOGIQUE SYNTHÉTIQUE — Société Test Gamma SA
+Exercice 2025 — montants en dinars
+
+ACTIF
+Immobilisations corporelles nettes : 400 000
+Stocks de marchandises : 150 000
+Créances clients : 120 000
+Disponibilités : 80 000
+TOTAL GÉNÉRAL : 750 000
+
+PASSIF
+Capital social : 250 000
+Réserves : 90 000
+Résultat net de l'exercice : 60 000
+Emprunts bancaires à long terme : 200 000
+Dettes fournisseurs : 110 000
+Dettes fiscales et sociales : 40 000
+TOTAL GÉNÉRAL : 750 000
+
+COMPTE DE RÉSULTAT
+Ventes de marchandises : 900 000
+Résultat net : 60 000
+
+Note : aucun sous-total (actifs courants, passifs courants, capitaux propres) n'est donné volontairement.
+Note : données fictives créées uniquement pour tester le logiciel.

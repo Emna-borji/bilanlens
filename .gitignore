@@ -1,0 +1,50 @@
+# Environnements virtuels
+.venv/
+venv/
+env/
+ENV/
+
+# Caches Python et pytest
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Variables d'environnement
+.env
+.env.*
+!.env.example
+
+# Fichiers système / éditeurs
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Fichiers temporaires et logs
+*.log
+*.tmp
+*.bak
+tmp/
+scratch/
+
+# Distribution et packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OCR intermédiaires
+*.ocr.cache

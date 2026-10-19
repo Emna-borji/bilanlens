@@ -1,0 +1,48 @@
+EXEMPLE PÉDAGOGIQUE SYNTHÉTIQUE — Société Test Alpha SA
+Exercice clos le 31/12/2025
+Montants en milliers de dinars tunisiens (TND)
+
+BILAN — CAPITAUX PROPRES ET PASSIFS
+Total passif et capitaux propres : 8 500
+Total des capitaux propres et des passifs : 8 500
+
+Capital social : 2 000
+Réserves : 1 300
+Résultat de l'exercice : 700
+Capitaux propres : 4 000
+
+Dettes financières à long terme : 2 500
+Fournisseurs et comptes rattachés : 1 400
+Autres passifs courants : 600
+Passifs courants : 2 000
+Total des dettes : 4 500
+
+BILAN — ACTIFS
+Immobilisations nettes : 5 000
+Stocks : 1 200
+Clients et comptes rattachés : 1 500
+Autres actifs courants : 300
+Liquidités et équivalents de liquidités : 500
+Actifs courants : 3 500
+Total actif : 8 500
+
+COMPTE DE RÉSULTAT
+Chiffre d'affaires : 12 000
+Achats consommés (HT) : 7 000
+Achats TTC : 8 330
+Variation des stocks : 200
+Coût des ventes : 6 800
+Résultat d'exploitation : 1 100
+Charges financières : 150
+Impôt sur les bénéfices : 250
+Résultat net : 700
+
+INFORMATIONS COMPLÉMENTAIRES
+Stock au début de l'exercice : 1 000
+Stock à la fin de l'exercice : 1 200
+Nombre d'actions (milliers) : 200
+Bénéfice par action (TND) : 3,5
+Dividende par action (TND) : 1,2
+Cours de l'action au 31/12/2025 (TND) : 42
+
+Note : données fictives créées uniquement pour tester le logiciel.
