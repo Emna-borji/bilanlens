@@ -111,14 +111,20 @@ def clean_ocr_text(text: str) -> str:
     return cleaned
 
 
-def _ocr_pdf_bytes(raw: bytes, languages: str = "fra+eng") -> str:
-    """OCR complet d'un PDF (toutes pages) via PyMuPDF + Tesseract.
+def _ocr_pdf_bytes(raw: bytes, languages: str = "fra+eng"):
+    """OCR complet d'un PDF via PyMuPDF + Tesseract.
 
-    Retourne une chaîne vide si Tesseract n'est pas disponible ou si
-    l'OCR échoue.
+    Retourne (texte_concaténé, pages_de_mots). `pages_de_mots` est une
+    liste par page de dicts {text, x0, x1, top} compatibles avec
+    `_extract_period_records_from_pdf_page` : ça permet de retrouver les
+    colonnes grâce aux coordonnées même quand les montants OCR sont
+    collés par un simple espace dans le texte brut.
+
+    Retourne ("", []) si Tesseract n'est pas disponible ou si l'OCR échoue.
     """
+    empty = ("", [])
     if not ocr_available():
-        return ""
+        return empty
 
     try:
         import pymupdf  # type: ignore
@@ -126,17 +132,19 @@ def _ocr_pdf_bytes(raw: bytes, languages: str = "fra+eng") -> str:
         try:
             import fitz as pymupdf  # type: ignore
         except ImportError:
-            return ""
+            return empty
 
     try:
         import pytesseract
+        from pytesseract import Output
         from PIL import Image
     except ImportError:
-        return ""
+        return empty
 
     _configure_pytesseract(pytesseract)
 
     pages_text = []
+    pages_words = []
     try:
         with pymupdf.open(stream=raw, filetype="pdf") as doc:
             for page in doc:
@@ -150,14 +158,50 @@ def _ocr_pdf_bytes(raw: bytes, languages: str = "fra+eng") -> str:
                     page_text = pytesseract.image_to_string(
                         img, lang=languages
                     )
+                    data = pytesseract.image_to_data(
+                        img, lang=languages, output_type=Output.DICT
+                    )
                 except pytesseract.TesseractError:
-                    # Repli silencieux sur anglais seul si fra manque.
                     page_text = pytesseract.image_to_string(img, lang="eng")
+                    data = pytesseract.image_to_data(
+                        img, lang="eng", output_type=Output.DICT
+                    )
                 pages_text.append(page_text)
+                words = []
+                for text, left, width, top in zip(
+                    data["text"],
+                    data["left"],
+                    data["width"],
+                    data["top"],
+                ):
+                    cleaned = (text or "").strip()
+                    if not cleaned:
+                        continue
+                    words.append({
+                        "text": cleaned,
+                        "x0": float(left),
+                        "x1": float(left) + float(width),
+                        "top": float(top),
+                    })
+                pages_words.append(words)
     except Exception:
-        return ""
+        return empty
 
-    return "\n".join(pages_text)
+    return ("\n".join(pages_text), pages_words)
+
+
+class _OCRPage:
+    """Imite une page pdfplumber pour `_extract_period_records_from_pdf_page`.
+
+    Ne gère que `extract_words(...)` ; les tableaux structurés n'existent
+    pas dans un scan.
+    """
+
+    def __init__(self, words):
+        self._words = words
+
+    def extract_words(self, **_kwargs):
+        return list(self._words)
 
 
 def _make_dataframe(rows):
@@ -230,7 +274,10 @@ def parse_amount(value):
 
     elif "," in s:
         parts = s.split(",")
-        if len(parts) == 2 and len(parts[-1]) in (1, 2):
+        # Une seule virgule : c'est un séparateur décimal (format français
+        # ou SCF tunisien, ex. « 1 281 772 854,965 » = 1 281 772 854.965).
+        # Plusieurs virgules : séparateur de milliers.
+        if len(parts) == 2:
             s = parts[0] + "." + parts[-1]
         else:
             s = "".join(parts)
@@ -261,6 +308,44 @@ def _parse_date(value):
         return datetime.strptime(match.group(), "%d/%m/%Y").date()
     except ValueError:
         return None
+
+
+# Regex d'un montant financier à la française :
+# - entier avec groupes de 3 chiffres séparés par espace / espace fine /
+#   insécable, optionnellement signé, optionnellement entre parenthèses,
+# - partie décimale avec virgule ou point.
+_FRENCH_AMOUNT_RE = re.compile(
+    r"-?\(?-?\d{1,3}(?:[\s \xa0]\d{3})+(?:[.,]\d+)?\)?"
+    r"|-?\(?-?\d+(?:[.,]\d+)?\)?"
+)
+
+
+def _split_amounts_in_line(line, n_periods):
+    """Essaie d'identifier les n_periods derniers montants d'une ligne
+    dont les colonnes sont séparées par un simple espace.
+
+    Retourne la liste des chaînes montants (ordre d'apparition) ou None
+    si la ligne ne se prête pas à cette interprétation.
+    """
+    if n_periods < 2:
+        return None
+    matches = list(_FRENCH_AMOUNT_RE.finditer(line))
+    if len(matches) < n_periods:
+        return None
+    # Si la fin de la ligne n'est pas un montant (ex. phrase explicative),
+    # ce découpage est risqué : on l'évite.
+    tail = line[matches[-1].end():].strip()
+    if tail and re.search(r"[A-Za-zÀ-ÿ]", tail):
+        return None
+    # Prendre les N derniers montants : ce sont les colonnes de période.
+    period_matches = matches[-n_periods:]
+    # Vérifier que les montants « colonnes » sont consécutifs : entre
+    # chaque, il n'y a que des espaces (pas de texte intermédiaire).
+    for a, b in zip(period_matches, period_matches[1:]):
+        between = line[a.end():b.start()]
+        if between.strip():
+            return None
+    return [m.group(0) for m in period_matches]
 
 
 def _extract_period_records_from_text(text):
@@ -299,15 +384,42 @@ def _extract_period_records_from_text(text):
             if part.strip()
         ]
 
-        if len(parts) < len(current_periods) + 1:
-            continue
+        label = None
+        amount_cells = None
 
-        label = parts[0].strip(" •-\t")
+        if len(parts) >= len(current_periods) + 1:
+            # Chemin standard : au moins N+1 parties « bien séparées ».
+            label = parts[0].strip(" •-\t")
+            amount_cells = parts[-len(current_periods):]
+        else:
+            # Chemin de repli : colonnes collées par un simple espace
+            # (fréquent avec pdfplumber sur certains PDF réels).
+            trailing = _split_amounts_in_line(line, len(current_periods))
+            if trailing is None:
+                continue
+            # Le libellé est le texte avant le premier montant de queue.
+            first_trail_match = next(
+                m for m in _FRENCH_AMOUNT_RE.finditer(line)
+                if m.group(0) == trailing[0]
+                and m.start() >= line.rfind(trailing[-1]) - 500
+            )
+            label_text = line[:first_trail_match.start()].strip(" •-\t ")
+            # Retirer un éventuel numéro de note isolé en fin de libellé
+            # (ex. « Revenus 29 ... » → « Revenus »).
+            label_text = re.sub(
+                r"[\s ]+-?\(?\d{1,3}\)?[\s ]*$",
+                "",
+                label_text,
+            ).strip()
+            if not label_text:
+                continue
+            label = label_text
+            amount_cells = trailing
+
+        if not label:
+            continue
         if not re.search(r"[A-Za-zÀ-ÿ]", label):
             continue
-
-        # The final cells correspond to the date columns.
-        amount_cells = parts[-len(current_periods):]
 
         for period, amount_cell in zip(current_periods, amount_cells):
             value = parse_amount(amount_cell)
@@ -371,13 +483,23 @@ def _extract_period_records_from_tables(tables):
     return records
 
 
-def _extract_period_records_from_pdf_page(page):
-    """Extract financial rows using word coordinates and date-column anchors."""
-    words = page.extract_words(
-        x_tolerance=2,
-        y_tolerance=3,
-        keep_blank_chars=False,
-    )
+def _extract_period_records_from_pdf_page(page, y_tolerance=3):
+    """Extract financial rows using word coordinates and date-column anchors.
+
+    `y_tolerance` : tolérance verticale pour regrouper les mots d'une
+    même ligne. Les PDF natifs ont des glyphes alignés précisément (2-3
+    pixels) ; une page OCR scannée à 300 dpi a besoin de bien plus
+    (textbaselines légèrement décalés, 15-30 pixels).
+    """
+    try:
+        words = page.extract_words(
+            x_tolerance=2,
+            y_tolerance=y_tolerance,
+            keep_blank_chars=False,
+        )
+    except TypeError:
+        # Les shims de test (ex. _OCRPage) ignorent les kwargs.
+        words = page.extract_words()
 
     if not words:
         return []
@@ -388,7 +510,7 @@ def _extract_period_records_from_pdf_page(page):
         target = None
 
         for line in reversed(lines[-3:]):
-            if abs(line["top"] - word["top"]) <= 3:
+            if abs(line["top"] - word["top"]) <= y_tolerance:
                 target = line
                 break
 
@@ -430,45 +552,77 @@ def _extract_period_records_from_pdf_page(page):
         if len(periods) < 2 or len(anchors) < 2:
             continue
 
-        # Construire les groupes numériques à partir des coordonnées.
-        numeric_groups = []
-        current_group = []
+        numeric_words = [
+            word for word in row_words
+            if number_re.fullmatch(word["text"])
+        ]
+        if not numeric_words:
+            continue
 
-        for word in row_words:
-            token = word["text"]
+        # Construire les groupes numériques. Deux stratégies selon la
+        # densité des mots :
+        #  (a) montants expansés (PDF natif qui livre « 148 », « 273 »,
+        #      « 413 » séparément : nombreux mots, petits gaps à
+        #      l'intérieur d'un montant, grands gaps entre colonnes) ;
+        #  (b) montants compacts (OCR qui concatène « 148273413 » en un
+        #      seul token : un mot = une colonne).
+        # On distingue avec le nombre de mots par rapport au nombre de
+        # colonnes attendues.
+        gaps = [
+            numeric_words[i + 1]["x0"] - numeric_words[i]["x1"]
+            for i in range(len(numeric_words) - 1)
+        ]
 
-            if not number_re.fullmatch(token):
-                continue
+        if len(numeric_words) > len(periods) and gaps:
+            # Stratégie (a) : seuil adaptatif gap > 2.5 × médiane,
+            # avec minimum à 6 pixels pour les PDF natifs très serrés.
+            sorted_gaps = sorted(gaps)
+            median_gap = sorted_gaps[len(sorted_gaps) // 2]
+            gap_threshold = max(6.0, median_gap * 2.5)
 
+            numeric_groups = []
+            current_group = []
+            for word in numeric_words:
+                if current_group:
+                    gap = word["x0"] - current_group[-1]["x1"]
+                    if gap > gap_threshold:
+                        numeric_groups.append(current_group)
+                        current_group = []
+                current_group.append(word)
             if current_group:
-                gap = word["x0"] - current_group[-1]["x1"]
-
-                # Les morceaux d'un montant comme "3 600"
-                # sont proches ; les colonnes sont normalement plus éloignées.
-                if gap > 6:
-                    numeric_groups.append(current_group)
-                    current_group = []
-
-            current_group.append(word)
-
-        if current_group:
-            numeric_groups.append(current_group)
+                numeric_groups.append(current_group)
+        else:
+            # Stratégie (b) : chaque mot numérique est un groupe
+            # autonome (OCR qui regroupe déjà les chiffres par montant).
+            numeric_groups = [[word] for word in numeric_words]
 
         # Il faut une valeur identifiable pour chaque période.
         if len(numeric_groups) < len(periods):
             continue
 
-        # Associer chaque groupe numérique à la date la plus proche.
+        # Associer chaque groupe numérique à la date la plus proche en
+        # partant de la DROITE : la colonne la plus à droite correspond
+        # toujours à la période la plus à droite. Cela empêche qu'une
+        # référence de note (petit nombre dans une colonne « Notes »
+        # placée à GAUCHE des montants) soit assignée à une période par
+        # proximité, ce qui écraserait la vraie valeur.
         assigned = {}
-        for group in numeric_groups:
-            center = (group[0]["x0"] + group[-1]["x1"]) / 2
-            period_index = min(
-                range(len(anchors)),
-                key=lambda i: abs(center - anchors[i]),
-            )
-
-            if period_index not in assigned:
-                assigned[period_index] = group
+        assigned_group_ids = set()
+        for anchor_index in sorted(range(len(anchors)), reverse=True):
+            best_group = None
+            best_distance = None
+            for idx, group in enumerate(numeric_groups):
+                if idx in assigned_group_ids:
+                    continue
+                center = (group[0]["x0"] + group[-1]["x1"]) / 2
+                distance = abs(center - anchors[anchor_index])
+                if best_distance is None or distance < best_distance:
+                    best_distance = distance
+                    best_group = (idx, group)
+            if best_group is not None:
+                idx, group = best_group
+                assigned[anchor_index] = group
+                assigned_group_ids.add(idx)
 
         if len(assigned) < len(periods):
             continue
@@ -485,6 +639,13 @@ def _extract_period_records_from_pdf_page(page):
         label = " ".join(label_words).strip(" :-•\t")
         label = re.sub(
             r"\([A-Za-z]\.?\d+(?:\.\d+)*\)",
+            "",
+            label,
+        ).strip()
+        # Retirer un numéro de note isolé en fin de libellé
+        # (ex. « Revenus 29 » → « Revenus », « Stocks 10 » → « Stocks »).
+        label = re.sub(
+            r"[\s ]+-?\(?\d{1,3}\)?[\s ]*$",
             "",
             label,
         ).strip()
@@ -644,10 +805,22 @@ def extract_document(uploaded_file):
             and not tables
         ):
             if ocr_available():
-                ocr_text = _ocr_pdf_bytes(raw)
+                ocr_text, ocr_pages_words = _ocr_pdf_bytes(raw)
                 if ocr_text:
                     text = clean_ocr_text(ocr_text)
                     used_ocr = True
+                    # Rejouer l'extraction par coordonnées sur les mots
+                    # retournés par l'OCR : on retrouve ainsi les colonnes
+                    # grâce aux positions x, y des mots, exactement comme
+                    # pour un PDF à couche texte. Pages scannées à 300 dpi
+                    # → y_tolerance plus permissif (lignes légèrement
+                    # obliques, textbaselines imprécises).
+                    for words in ocr_pages_words:
+                        pdf_records.extend(
+                            _extract_period_records_from_pdf_page(
+                                _OCRPage(words), y_tolerance=30
+                            )
+                        )
 
 
     elif suffix == ".docx":
