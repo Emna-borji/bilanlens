@@ -23,19 +23,31 @@ jobs:
         # Dépôts stables d'Ubuntu : Tesseract 4.1. Les bounding boxes
         # retournées par image_to_data sont moins précises qu'en 5.x, ce
         # qui déstabilise le regroupement par colonnes sur un bilan
-        # 3-colonnes (SOTUVER scanné). On installe donc la 5.x via le
-        # PPA alex-p/tesseract-ocr-devel pour aligner CI et poste local
-        # (UB-Mannheim 5.4 sous Windows).
+        # 3-colonnes (SOTUVER scanné).
+        # On installe donc :
+        #  - le binaire Tesseract 5.5 via le PPA alex-p/tesseract-ocr-devel,
+        #  - les modèles LSTM fra/eng à jour (tessdata_fast) directement
+        #    depuis le dépôt officiel ; les paquets tesseract-ocr-fra /
+        #    tesseract-ocr-eng du PPA sont encore en 4.1.
         run: |
           sudo add-apt-repository -y ppa:alex-p/tesseract-ocr-devel
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             tesseract-ocr \
-            tesseract-ocr-fra \
-            tesseract-ocr-eng \
             poppler-utils
+          TESSDATA_DIR="$(dirname "$(tesseract --print-parameters 2>/dev/null \
+            | head -n 1)")" || true
+          TESSDATA_DIR=/usr/share/tesseract-ocr/5/tessdata
+          sudo mkdir -p "$TESSDATA_DIR"
+          sudo curl -L -o "$TESSDATA_DIR/fra.traineddata" \
+            https://github.com/tesseract-ocr/tessdata/raw/main/fra.traineddata
+          sudo curl -L -o "$TESSDATA_DIR/eng.traineddata" \
+            https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata
+          sudo curl -L -o "$TESSDATA_DIR/osd.traineddata" \
+            https://github.com/tesseract-ocr/tessdata/raw/main/osd.traineddata
+          echo "TESSDATA_PREFIX=$TESSDATA_DIR" >> "$GITHUB_ENV"
           tesseract --version
-          tesseract --list-langs
+          TESSDATA_PREFIX="$TESSDATA_DIR" tesseract --list-langs
 
       - name: Install Python dependencies
         run: |
