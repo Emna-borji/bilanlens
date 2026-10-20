@@ -1,5 +1,6 @@
 
 import re
+import unicodedata
 from .extraction import extract_labeled_values
 
 
@@ -8,47 +9,66 @@ ALIASES = {
     "non_current_assets": [
         "actifs non courants", "actif non courant",
         "total des actifs non courants", "total actif non courant",
+        "total actifs non courants",
         "immobilisations nettes", "immobilisation nette",
         "actif immobilisé", "total de l'actif immobilisé",
         "total actif immobilisé", "immobilisations corporelles nettes",
         "immobilisation corporelle nette", "immobilisations corporelles",
         "immobilisations incorporelles", "immobilisations financières",
-        "non-current assets", "property plant and equipment",
+        "total immobilisations",
+        "total des immobilisations",
+        "non-current assets", "total non-current assets",
+        "property plant and equipment", "property, plant and equipment",
     ],
     "current_assets": [
         "actifs courants", "actif courant", "actifs circulants",
         "actif circulant", "total des actifs courants",
         "total actifs courants", "totale des actifs courants",
         "total de l'actif courant", "total de l'actif circulant",
-        "total actif circulant", "total current assets", "current assets",
+        "total actif circulant",
+        "total actif courant",
+        "total current assets", "current assets",
         "current assets total",
     ],
     "total_assets": [
         "total actif", "total actifs", "total des actifs",
         "total de l'actif", "total général de l'actif", "total assets",
+        "total du bilan", "total general du bilan",
+        "total des capitaux propres et passifs",
+        "total capitaux propres et passifs",
+        "total de capitaux propres et passifs",
+        "total des capitaux propres et des passifs",
+        "total equity and liabilities",
     ],
     "inventory": [
         "stocks", "stock", "stocks nets", "stocks de marchandises",
+        "stocks et en cours", "stocks et en-cours",
         "inventaires", "inventories", "inventory",
     ],
     "beginning_inventory": [
         "stock au début de l'exercice", "stock initial",
         "stocks au début de l'exercice", "stock d'ouverture",
         "stock au début", "beginning inventory", "opening inventory",
+        "stocks à l'ouverture",
     ],
     "ending_inventory": [
         "stock à la fin de l'exercice", "stock final",
         "stocks à la fin de l'exercice", "stock de clôture",
         "stock à la fin", "ending inventory", "closing inventory",
+        "stocks à la clôture",
     ],
     "receivables": [
         "créances clients", "clients et comptes rattachés",
+        "clients et comptes rattachés nets",
         "créances commerciales", "comptes clients",
+        "créances d'exploitation",
         "trade receivables", "accounts receivable",
+        "trade and other receivables",
     ],
     "cash": [
         "trésorerie", "disponibilités", "liquidités",
         "liquidités et équivalents de liquidités",
+        "trésorerie et équivalents de trésorerie",
         "cash", "cash and cash equivalents", "cash equivalents",
     ],
 
@@ -58,10 +78,23 @@ ALIASES = {
         "total des capitaux propres",
         "total des capitaux propres avant affectation",
         "total des capitaux propres après affectation",
-        "total capitaux propres consolidés", "fonds propres",
+        "total des capitaux propres (part du groupe)",
+        "capitaux propres part du groupe",
+        "total capitaux propres consolidés",
+        "total capitaux propres consolides",
+        "capitaux propres consolidés",
+        "fonds propres",
         "total des fonds propres", "total equity", "equity",
         "shareholders' equity", "stockholders' equity",
         "total shareholders' equity",
+    ],
+    "minority_interests": [
+        "intérêts minoritaires", "intérêts des minoritaires",
+        "total des intérêts minoritaires",
+        "total des intérêts des minoritaires",
+        "intérêts hors groupe", "part des minoritaires",
+        "minority interests", "non-controlling interests",
+        "total non-controlling interests",
     ],
     "share_capital": [
         "capital social", "capital", "capital émis",
@@ -70,6 +103,7 @@ ALIASES = {
     "reserves": [
         "réserves", "reserves", "réserves légales",
         "réserves statutaires", "autres réserves",
+        "total des réserves",
     ],
     "current_liabilities": [
         "passifs courants", "passif courant", "passifs circulants",
@@ -83,6 +117,7 @@ ALIASES = {
         "dettes fournisseurs", "dettes envers les fournisseurs",
         "fournisseurs et comptes rattachés", "comptes fournisseurs",
         "trade payables", "accounts payable",
+        "trade and other payables",
     ],
     "tax_social_payables": [
         "dettes fiscales et sociales", "dettes fiscales",
@@ -94,14 +129,19 @@ ALIASES = {
         "dettes financières à long terme", "dettes à long terme",
         "dettes long terme", "emprunts bancaires à long terme",
         "emprunts à long terme", "emprunts bancaires",
+        "emprunts et dettes financières",
+        "emprunts et dettes assimilées",
         "passifs non courants", "total des passifs non courants",
         "total passifs non courants", "long-term debt",
         "long term debt", "non-current liabilities",
         "total non-current liabilities", "non-current borrowings",
+        "borrowings",
     ],
     "total_debt": [
         "total des dettes", "total dettes", "dettes totales",
         "total des emprunts et dettes", "total debt", "total borrowings",
+        "total liabilities",
+        "total des passifs", "total passifs",
     ],
 
     # Compte de résultat
@@ -119,7 +159,8 @@ ALIASES = {
         "résultat net", "résultat net de l'exercice",
         "résultat de l'exercice", "résultat net part du groupe",
         "bénéfice net", "perte nette", "net income", "net profit",
-        "net loss", "profit for the year",
+        "net loss", "profit for the year", "loss for the year",
+        "profit for the period", "net result",
     ],
     "cost_of_goods_sold": [
         "coût des ventes", "cout des ventes",
@@ -163,6 +204,7 @@ LABELS = {
 
     # Capitaux propres et passif
     "equity": "Capitaux propres",
+    "minority_interests": "Intérêts minoritaires",
     "share_capital": "Capital social",
     "reserves": "Réserves",
     "current_liabilities": "Passifs courants",
@@ -214,12 +256,19 @@ UNIT_PARENS = re.compile(
 )
 
 
+def _strip_accents(s):
+    """Supprime les signes diacritiques (é→e, ô→o, ç→c)."""
+    normalized = unicodedata.normalize("NFKD", s)
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+
+
 def normalize(s):
     """
     Normalise un libellé pour faciliter sa reconnaissance.
 
-    Supprime les références de notes, les dates et les unités entre
-    parenthèses, sans supprimer les autres informations du libellé.
+    Opérations : mise en minuscules, suppression des accents, suppression
+    des références de notes, des dates et des unités entre parenthèses.
+    Préserve la correspondance exacte (identité canonique).
     """
     s = str(s).lower().replace("’", "'").replace("`", "'")
 
@@ -237,9 +286,12 @@ def normalize(s):
     # « au 31/12/2025 » ou « au 2025-12-31 ».
     s = re.sub(r"\bau\s+", " ", s)
 
-    # Normaliser les caractères restants.
+    # Supprimer les accents après avoir isolé les éléments contextuels.
+    s = _strip_accents(s)
+
+    # Normaliser les caractères restants (ASCII simple après accents).
     s = re.sub(
-        r"[^a-z0-9àâäéèêëïîôöùûüç' ]+",
+        r"[^a-z0-9' ]+",
         " ",
         s,
     )
@@ -259,6 +311,60 @@ for _key, _aliases in ALIASES.items():
         ALIAS_INDEX[_norm] = _key
 
 
+# Rangs d'alias (plus grand = préféré en cas d'ambiguïté).
+# Rang 1 = sous-total officiel (ligne qui agrège plusieurs composants) ;
+# rang 0 = composant élémentaire (une seule ligne du bilan).
+#
+# Convention automatique : tout alias commençant par « total » est rang 1.
+# Les autres sous-totaux officiels (sans « total ») sont listés
+# explicitement ci-dessous.
+_TOTAL_PREFIXES = ("total ",)
+
+_EXPLICIT_RANK1 = {
+    # PCG : sous-totaux français qui n'utilisent pas « total ».
+    "actif immobilise", "actifs immobilises",
+    "actif circulant", "actifs circulants",
+    "actif courant", "actifs courants",
+    "actif non courant", "actifs non courants",
+    "passif courant", "passifs courants",
+    "passif non courant", "passifs non courants",
+    "passifs circulants", "passif circulant",
+    "capitaux propres",
+    "fonds propres",
+    "dettes a long terme", "dettes long terme",
+    "dettes a court terme", "dettes court terme",
+    # SCF / IFRS courants.
+    "equity",
+    "current assets", "non-current assets",
+    "current liabilities", "non-current liabilities",
+    # Postes résultat agrégés et libellés agrégés fréquents.
+    "chiffre d'affaires", "chiffre d'affaires net",
+    "revenus", "revenue", "revenues", "net sales", "sales", "turnover",
+    "resultat net", "net income", "net profit",
+    "resultat de l'exercice", "profit for the year",
+    # Immobilisations nettes = sous-total consolidant les immobilisations.
+    "immobilisations nettes", "immobilisation nette",
+    # Reserves (bare) = sous-total de toutes les réserves.
+    "reserves",
+    # Stocks nets = stocks bruts - provisions (sous-total officiel).
+    "stocks nets",
+    # Clients et comptes rattachés nets = idem (après provisions).
+    "clients et comptes rattaches nets",
+}
+
+
+def alias_rank(label) -> int:
+    """0 = alias de composant, 1 = alias de sous-total officiel."""
+    norm = normalize(label)
+    if not norm:
+        return 0
+    if norm.startswith(_TOTAL_PREFIXES):
+        return 1
+    if norm in _EXPLICIT_RANK1:
+        return 1
+    return 0
+
+
 def identify_key(label):
     """Associe un libellé à un poste comptable par correspondance exacte."""
     return ALIAS_INDEX.get(normalize(label))
@@ -275,6 +381,7 @@ def map_candidates(text, records=None):
         mapped.append({
             **item,
             "key": key,
+            "rank": alias_rank(item["label"]) if key else 0,
             "canonical_label": LABELS.get(key, "À vérifier"),
             "confidence": "candidate" if key else "unmapped",
         })

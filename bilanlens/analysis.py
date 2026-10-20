@@ -369,7 +369,7 @@ def build_diagnostic(values, ratios):
         if liq >= 1:
             strengths.append(f"Bonne couverture générale à court terme : liquidité de {fr_number(liq)}.")
         else:
-            risks.append(f"Liquidité générale de {fr_number(liq)} : les actifs courants ne couvrent pas les passifs courants.")
+            risks.append(f"Liquidité générale inférieure à 1 ({fr_number(liq)}) : les actifs courants ne couvrent pas les passifs courants.")
     else:
         caveats.append("Liquidité générale non calculée : vérifier les actifs et passifs courants.")
 

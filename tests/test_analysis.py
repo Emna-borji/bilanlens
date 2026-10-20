@@ -1,4 +1,4 @@
-from finsight.analysis import calculate_ratios, build_diagnostic
+﻿from bilanlens.analysis import calculate_ratios, build_diagnostic
 
 def test_example_ratios():
     values = {

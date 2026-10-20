@@ -1,0 +1,43 @@
+SYNTHETIC EDUCATIONAL EXAMPLE — IFRS Gamma Plc (United Kingdom)
+Financial statements for the year ended 31/12/2025
+Amounts in pounds sterling (GBP), comma used as thousands separator,
+dot used as decimal separator (anglophone format).
+
+STATEMENT OF FINANCIAL POSITION
+Non-current assets
+Property, plant and equipment: 12,345,000
+Total non-current assets: 12,345,000
+
+Current assets
+Inventories: 3,250
+Trade and other receivables: 2,750
+Cash and cash equivalents: 1,250
+Total current assets: 7,250
+
+Total assets: 19,595,000
+
+Equity
+Share capital: 5,000,000
+Reserves: 2,100,000
+Profit for the year: 450,000
+Total equity: 7,550,000
+
+Non-current liabilities
+Borrowings: 8,000,000
+Total non-current liabilities: 8,000,000
+
+Current liabilities
+Trade and other payables: 3,500,000
+Current liabilities: 4,045,000
+
+Total liabilities: 12,045,000
+
+INCOME STATEMENT
+Revenue: 25,750,000
+Cost of sales: 15,500,000
+Operating profit: 1,250,000
+Profit for the year: 450,000
+
+Note: fictional data; the "1,250" / "3,250" / "12,345,000" values are
+thousands-separated English amounts. Any detector that reads "1,250" as
+"one point two five oh" would compute wrong ratios.
