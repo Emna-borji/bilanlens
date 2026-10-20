@@ -1,4 +1,8 @@
-"""Tests contre les valeurs de RESULTATS_ATTENDUS.txt (test1 à test3)."""
+"""Tests contre les valeurs de RESULTATS_ATTENDUS.txt (test1 à test3).
+
+Chaque fichier (test1, test2, test3) est testé en deux formats : le .txt
+et le .pdf. Les deux formats doivent donner les mêmes postes et ratios.
+"""
 import pytest
 
 from conftest import load
@@ -10,13 +14,8 @@ def _run(file_name):
     return values, ratios
 
 
-# ---------------------------------------------------------------------------
-# TEST 1 : « Autres ... » et « Total passif et capitaux propres » placés avant
-# les vrais totaux (piège d'ordre).
-# ---------------------------------------------------------------------------
-def test_test1_txt_values_and_ratios():
-    values, ratios = _run("test1_complet_ordre_piege.txt")
-
+def _assert_test1(values, ratios):
+    """Postes et ratios attendus pour test1 (format .txt ou .pdf)."""
     # Les postes-clé doivent provenir des libellés EXACTS, pas des pièges.
     assert values["current_assets"] == 3500
     assert values["current_liabilities"] == 2000
@@ -52,12 +51,8 @@ def test_test1_txt_values_and_ratios():
     assert ratios["dividend_yield"] * 100 == pytest.approx(2.86, abs=0.05)
 
 
-# ---------------------------------------------------------------------------
-# TEST 2 : 2 colonnes (2024/2025), notes (B.1), perte entre parenthèses.
-# ---------------------------------------------------------------------------
-def test_test2_txt_values_and_ratios():
-    values, ratios = _run("test2_perte_colonnes_notes.txt")
-
+def _assert_test2(values, ratios):
+    """Postes et ratios attendus pour test2 (format .txt ou .pdf)."""
     # Les valeurs doivent provenir de la colonne 2025, pas 2024.
     assert values["current_assets"] == 2400
     assert values["inventory"] == 900
@@ -77,12 +72,8 @@ def test_test2_txt_values_and_ratios():
     assert ratios["roa"] * 100 == pytest.approx(-4.17, abs=0.1)
 
 
-# ---------------------------------------------------------------------------
-# TEST 3 : aucun sous-total, l'app doit RECONSTITUER.
-# ---------------------------------------------------------------------------
-def test_test3_txt_values_and_ratios():
-    values, ratios = _run("test3_sans_totaux.txt")
-
+def _assert_test3(values, ratios):
+    """Postes et ratios attendus pour test3 (format .txt ou .pdf)."""
     # Les composants élémentaires doivent être lus.
     assert values["inventory"] == 150000
     assert values["receivables"] == 120000
@@ -109,3 +100,35 @@ def test_test3_txt_values_and_ratios():
     assert ratios["net_margin"] * 100 == pytest.approx(6.67, abs=0.05)
     assert ratios["roe"] * 100 == pytest.approx(15.0, abs=0.1)
     assert ratios["roa"] * 100 == pytest.approx(8.0, abs=0.1)
+
+
+# ---------------------------------------------------------------------------
+# TEST 1 : .txt et .pdf doivent donner les mêmes valeurs et ratios.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "file_name",
+    ["test1_complet_ordre_piege.txt", "test1_complet_ordre_piege.pdf"],
+)
+def test_test1_values_and_ratios(file_name):
+    values, ratios = _run(file_name)
+    _assert_test1(values, ratios)
+
+
+@pytest.mark.parametrize(
+    "file_name",
+    ["test2_perte_colonnes_notes.txt", "test2_perte_colonnes_notes.pdf"],
+)
+def test_test2_values_and_ratios(file_name):
+    values, ratios = _run(file_name)
+    _assert_test2(values, ratios)
+
+
+@pytest.mark.parametrize(
+    "file_name",
+    ["test3_sans_totaux.txt", "test3_sans_totaux.pdf"],
+)
+def test_test3_values_and_ratios(file_name):
+    values, ratios = _run(file_name)
+    _assert_test3(values, ratios)
+
+
