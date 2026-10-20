@@ -36,6 +36,7 @@ ALIASES = {
         "total du bilan", "total general du bilan",
         "total des capitaux propres et passifs",
         "total capitaux propres et passifs",
+        "total de capitaux propres et passifs",
         "total des capitaux propres et des passifs",
         "total equity and liabilities",
     ],
@@ -77,10 +78,23 @@ ALIASES = {
         "total des capitaux propres",
         "total des capitaux propres avant affectation",
         "total des capitaux propres après affectation",
-        "total capitaux propres consolidés", "fonds propres",
+        "total des capitaux propres (part du groupe)",
+        "capitaux propres part du groupe",
+        "total capitaux propres consolidés",
+        "total capitaux propres consolides",
+        "capitaux propres consolidés",
+        "fonds propres",
         "total des fonds propres", "total equity", "equity",
         "shareholders' equity", "stockholders' equity",
         "total shareholders' equity",
+    ],
+    "minority_interests": [
+        "intérêts minoritaires", "intérêts des minoritaires",
+        "total des intérêts minoritaires",
+        "total des intérêts des minoritaires",
+        "intérêts hors groupe", "part des minoritaires",
+        "minority interests", "non-controlling interests",
+        "total non-controlling interests",
     ],
     "share_capital": [
         "capital social", "capital", "capital émis",
@@ -127,6 +141,7 @@ ALIASES = {
         "total des dettes", "total dettes", "dettes totales",
         "total des emprunts et dettes", "total debt", "total borrowings",
         "total liabilities",
+        "total des passifs", "total passifs",
     ],
 
     # Compte de résultat
@@ -189,6 +204,7 @@ LABELS = {
 
     # Capitaux propres et passif
     "equity": "Capitaux propres",
+    "minority_interests": "Intérêts minoritaires",
     "share_capital": "Capital social",
     "reserves": "Réserves",
     "current_liabilities": "Passifs courants",
@@ -330,6 +346,10 @@ _EXPLICIT_RANK1 = {
     "immobilisations nettes", "immobilisation nette",
     # Reserves (bare) = sous-total de toutes les réserves.
     "reserves",
+    # Stocks nets = stocks bruts - provisions (sous-total officiel).
+    "stocks nets",
+    # Clients et comptes rattachés nets = idem (après provisions).
+    "clients et comptes rattaches nets",
 }
 
 

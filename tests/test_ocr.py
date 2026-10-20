@@ -39,20 +39,20 @@ def test_test1_scanned_triggers_ocr_and_computes_core_ratios():
 
 
 # ---------------------------------------------------------------------------
-# SOTUVER scanné (bilan — pages 2-3 du PDF réel, rendues en images).
-#
-# Les ratios « d'orientation » qui ne dépendent que des sous-totaux
-# bilan (liquidité générale, autonomie financière) doivent rester
-# proches de la cible publique, même avec le bruit OCR sur 3 colonnes.
-# Les ratios composés qui dépendent du compte de résultat (marge nette,
-# ROE) ne sont pas calculables car le CR est sur d'autres pages.
+# SOTUVER scanné : pages 2-4 du PDF réel rendues en images.
+# Pages 2-3 = bilan, page 4 = état de résultat.
+# Grâce au nouveau pipeline OCR par coordonnées (pytesseract.image_to_data
+# → _OCRPage + _extract_period_records_from_pdf_page) et au traitement
+# des colonnes collées, les 5 ratios cibles sont retrouvés avec les mêmes
+# tolérances que la version PDF native.
 # ---------------------------------------------------------------------------
-def test_sotuver_scanned_triggers_ocr_and_matches_balance_targets():
+def test_sotuver_scanned_triggers_ocr_and_matches_all_targets():
     _values, ratios, _checks, extra = run_pipeline(load("sotuver_scanned.pdf"))
 
     assert extra["used_ocr"] is True
 
-    # Liquidité : CA / CL ne dépend pas de l'extraction du CR.
-    assert ratios["current_ratio"] == pytest.approx(1.14, abs=0.05)
-    # Autonomie financière : CP / Total actif, idem.
-    assert ratios["equity_ratio"] * 100 == pytest.approx(34.53, abs=0.5)
+    assert ratios["current_ratio"] == pytest.approx(1.14, abs=0.01)
+    assert ratios["debt_to_equity"] == pytest.approx(1.90, abs=0.02)
+    assert ratios["equity_ratio"] * 100 == pytest.approx(34.53, abs=0.1)
+    assert ratios["roe"] * 100 == pytest.approx(11.49, abs=0.1)
+    assert ratios["net_margin"] * 100 == pytest.approx(13.79, abs=0.1)
