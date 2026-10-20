@@ -36,7 +36,46 @@ def test_synth_pcg_fr():
 
 
 # ---------------------------------------------------------------------------
-# IFRS en anglais.
+# IFRS en anglais — virgule utilisée comme séparateur de milliers
+# (« 1,250 » = mille deux cent cinquante, pas 1,25).
+# ---------------------------------------------------------------------------
+def test_synth_ifrs_en_comma_thousands():
+    values, ratios, checks, extra = run_pipeline(
+        load("synth_ifrs_en_comma_thousands.txt")
+    )
+
+    assert values["non_current_assets"] == 12_345_000
+    assert values["current_assets"] == 7_250
+    assert values["inventory"] == 3_250
+    assert values["receivables"] == 2_750
+    assert values["cash"] == 1_250
+    assert values["total_assets"] == 19_595_000
+    assert values["share_capital"] == 5_000_000
+    assert values["reserves"] == 2_100_000
+    assert values["equity"] == 7_550_000
+    assert values["long_term_debt"] == 8_000_000
+    assert values["current_liabilities"] == 4_045_000
+    assert values["total_debt"] == 12_045_000
+    assert values["revenue"] == 25_750_000
+    assert values["cost_of_goods_sold"] == 15_500_000
+    assert values["operating_income"] == 1_250_000
+    assert values["net_income"] == 450_000
+
+    assert ratios["current_ratio"] == pytest.approx(7250 / 4_045_000, abs=0.001)
+    assert ratios["debt_to_equity"] == pytest.approx(
+        12_045_000 / 7_550_000, abs=0.01
+    )
+    assert ratios["equity_ratio"] == pytest.approx(
+        7_550_000 / 19_595_000, abs=0.001
+    )
+    assert ratios["net_margin"] == pytest.approx(450_000 / 25_750_000, abs=0.001)
+
+    # Vérification de la locale.
+    assert extra.get("period") is None or extra.get("period") == "31/12/2025"
+
+
+# ---------------------------------------------------------------------------
+# IFRS en anglais — montants avec espaces de milliers (format mixte).
 # ---------------------------------------------------------------------------
 def test_synth_ifrs_en():
     values, ratios, checks, _ = run_pipeline(load("synth_ifrs_en.txt"))

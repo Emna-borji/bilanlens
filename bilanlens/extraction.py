@@ -231,8 +231,45 @@ def _make_dataframe(rows):
     return pd.DataFrame(normalized_rows[1:], columns=unique_headers)
 
 
-def parse_amount(value):
-    """Parse common French and English financial number formats."""
+def detect_decimal_separator(text: str) -> str:
+    """Détecte le séparateur décimal utilisé par un document.
+
+    Retourne ',' pour un document francophone (SCF tunisien, PCG français,
+    ex. « 1 281 772 854,965 »), ou '.' pour un document anglophone
+    (IFRS, ex. « 1,281,772,854.965 »).
+
+    Détection basée sur des signaux clairs :
+    - Au moins un nombre avec plusieurs virgules séparées par des groupes
+      de 3 chiffres (« 12,345,678 ») → anglais.
+    - Au moins un nombre virgule(s)-puis-point décimal
+      (« 12,345.67 ») → anglais.
+    - Au moins un nombre espace(s)-de-milliers puis virgule décimale
+      (« 1 281,965 ») → français.
+
+    Défaut : français (SCF tunisien).
+    """
+    if not text:
+        return ","
+    # Signal fort pour l'anglais : plusieurs virgules séparant des groupes
+    # de 3 chiffres.
+    if re.search(r"\d{1,3}(?:,\d{3}){2,}\b", text):
+        return "."
+    # Signal fort pour l'anglais : virgule(s) puis point décimal.
+    if re.search(r"\d{1,3}(?:,\d{3})+\.\d+", text):
+        return "."
+    # Signal fort pour le français : espace de milliers + virgule décimale.
+    if re.search(r"\d(?:[\s  ]\d{3})+,\d+", text):
+        return ","
+    return ","
+
+
+def parse_amount(value, decimal_separator: str = ","):
+    """Parse common French and English financial number formats.
+
+    `decimal_separator` indique le séparateur décimal attendu pour les
+    cas ambigus (ex. « 1,250 » = 1250 en anglais vs 1,250 en français).
+    Valeurs acceptées : ',' (français — défaut) ou '.' (anglais).
+    """
     if value is None:
         return None
 
@@ -267,6 +304,8 @@ def parse_amount(value):
         return None
 
     if "," in s and "." in s:
+        # Les deux séparateurs présents : le dernier rencontré est la
+        # décimale (règle robuste, indépendante de la locale).
         if s.rfind(",") > s.rfind("."):
             s = s.replace(".", "").replace(",", ".")
         else:
@@ -274,12 +313,23 @@ def parse_amount(value):
 
     elif "," in s:
         parts = s.split(",")
-        # Une seule virgule : c'est un séparateur décimal (format français
-        # ou SCF tunisien, ex. « 1 281 772 854,965 » = 1 281 772 854.965).
-        # Plusieurs virgules : séparateur de milliers.
         if len(parts) == 2:
-            s = parts[0] + "." + parts[-1]
+            right = parts[1]
+            if decimal_separator == ",":
+                # Document francophone : la virgule est décimale.
+                # Ex. « 854,965 » = 854.965 ; « 3,5 » = 3.5.
+                s = parts[0] + "." + right
+            else:
+                # Document anglophone : exactement 3 chiffres après la
+                # virgule → séparateur de milliers (« 1,250 » = 1250).
+                # Sinon décimale « légère » (« 1,25 » = 1.25).
+                if len(right) == 3:
+                    s = parts[0] + right
+                else:
+                    s = parts[0] + "." + right
         else:
+            # Plusieurs virgules : séparateur de milliers
+            # (ex. « 1,234,567 »).
             s = "".join(parts)
 
     elif s.count(".") > 1:
@@ -288,7 +338,14 @@ def parse_amount(value):
 
     elif "." in s:
         left, right = s.split(".", 1)
-        if len(right) == 3 and left.isdigit() and right.isdigit():
+        # Un point suivi d'exactement 3 chiffres : séparateur de milliers
+        # en français (« 1.250 » = 1250), décimal en anglais.
+        if (
+            decimal_separator == ","
+            and len(right) == 3
+            and left.isdigit()
+            and right.isdigit()
+        ):
             s = left + right
 
     try:
@@ -348,7 +405,7 @@ def _split_amounts_in_line(line, n_periods):
     return [m.group(0) for m in period_matches]
 
 
-def _extract_period_records_from_text(text):
+def _extract_period_records_from_text(text, decimal_separator: str = ","):
     """
     Extract rows containing multiple financial periods.
 
@@ -422,7 +479,7 @@ def _extract_period_records_from_text(text):
             continue
 
         for period, amount_cell in zip(current_periods, amount_cells):
-            value = parse_amount(amount_cell)
+            value = parse_amount(amount_cell, decimal_separator=decimal_separator)
 
             if value is None:
                 continue
@@ -437,7 +494,7 @@ def _extract_period_records_from_text(text):
     return records
 
 
-def _extract_period_records_from_tables(tables):
+def _extract_period_records_from_tables(tables, decimal_separator: str = ","):
     """Extract records directly from DataFrames with date columns."""
     records = []
 
@@ -468,7 +525,7 @@ def _extract_period_records_from_tables(tables):
                 continue
 
             for column, period in period_columns:
-                value = parse_amount(row[column])
+                value = parse_amount(row[column], decimal_separator=decimal_separator)
 
                 if value is None:
                     continue
@@ -483,7 +540,9 @@ def _extract_period_records_from_tables(tables):
     return records
 
 
-def _extract_period_records_from_pdf_page(page, y_tolerance=3):
+def _extract_period_records_from_pdf_page(
+    page, y_tolerance=3, decimal_separator: str = ","
+):
     """Extract financial rows using word coordinates and date-column anchors.
 
     `y_tolerance` : tolérance verticale pour regrouper les mots d'une
@@ -659,7 +718,7 @@ def _extract_period_records_from_pdf_page(page, y_tolerance=3):
                 continue
 
             amount_text = "".join(word["text"] for word in group)
-            value = parse_amount(amount_text)
+            value = parse_amount(amount_text, decimal_separator=decimal_separator)
 
             if value is None:
                 continue
@@ -757,16 +816,20 @@ def extract_document(uploaded_file):
 
     
     elif suffix == ".pdf":
+        # Deux passes : (1) assembler le texte et les tableaux pour
+        # pouvoir détecter la locale, (2) rejouer l'extraction par
+        # coordonnées avec le bon séparateur décimal.
         try:
             import pdfplumber
 
+            pdf_pages = []  # (page object, text)
             with pdfplumber.open(io.BytesIO(raw)) as pdf:
                 page_texts = []
 
                 for page_number, page in enumerate(pdf.pages, start=1):
+                    page_text = page.extract_text() or ""
                     page_texts.append(
-                        f"\n--- Page {page_number} ---\n"
-                        f"{page.extract_text() or ''}"
+                        f"\n--- Page {page_number} ---\n{page_text}"
                     )
 
                     # Extraction des tableaux structurés.
@@ -775,12 +838,19 @@ def extract_document(uploaded_file):
                         if not df.empty:
                             tables.append(df)
 
-                    # Extraction indépendante grâce aux coordonnées.
-                    pdf_records.extend(
-                        _extract_period_records_from_pdf_page(page)
-                    )
+                    pdf_pages.append(page)
 
                 text = "\n".join(page_texts)
+                decimal_separator = detect_decimal_separator(text)
+
+                # Deuxième passe : parseur par coordonnées, avec la
+                # locale correctement détectée.
+                for page in pdf_pages:
+                    pdf_records.extend(
+                        _extract_period_records_from_pdf_page(
+                            page, decimal_separator=decimal_separator
+                        )
+                    )
 
         except Exception as exc:
             raise ValueError(
@@ -809,6 +879,8 @@ def extract_document(uploaded_file):
                 if ocr_text:
                     text = clean_ocr_text(ocr_text)
                     used_ocr = True
+                    # La locale OCR dépend du contenu lu : on redétecte.
+                    decimal_separator = detect_decimal_separator(text)
                     # Rejouer l'extraction par coordonnées sur les mots
                     # retournés par l'OCR : on retrouve ainsi les colonnes
                     # grâce aux positions x, y des mots, exactement comme
@@ -818,7 +890,9 @@ def extract_document(uploaded_file):
                     for words in ocr_pages_words:
                         pdf_records.extend(
                             _extract_period_records_from_pdf_page(
-                                _OCRPage(words), y_tolerance=30
+                                _OCRPage(words),
+                                y_tolerance=30,
+                                decimal_separator=decimal_separator,
                             )
                         )
 
@@ -852,10 +926,18 @@ def extract_document(uploaded_file):
                 f"Impossible de lire ce document Word : {exc}"
             ) from exc
 
+    # Détection de la locale finale sur tout le texte extrait.
+    # Pour un PDF, elle a déjà été utilisée dans les deux passes
+    # ci-dessus ; on la calcule à nouveau ici pour couvrir TXT/CSV/
+    # XLSX/DOCX et pour l'exposer dans le résultat.
+    decimal_separator = detect_decimal_separator(text)
+
     # Prefer structured table records, then use the extracted PDF/text layout.
     # Duplicate label/value/period records are removed.
 
-    table_records = _extract_period_records_from_tables(tables)
+    table_records = _extract_period_records_from_tables(
+        tables, decimal_separator=decimal_separator
+    )
 
     if suffix == ".pdf":
         # Priorité aux tableaux structurés et aux coordonnées.
@@ -864,10 +946,14 @@ def extract_document(uploaded_file):
             records = _deduplicate_records(table_records + pdf_records)
         else:
             records = _deduplicate_records(
-                _extract_period_records_from_text(text)
+                _extract_period_records_from_text(
+                    text, decimal_separator=decimal_separator
+                )
             )
     else:
-        text_records = _extract_period_records_from_text(text)
+        text_records = _extract_period_records_from_text(
+            text, decimal_separator=decimal_separator
+        )
         records = _deduplicate_records(table_records + text_records)
 
 
@@ -882,12 +968,23 @@ def extract_document(uploaded_file):
         "suffix": suffix,
         "used_ocr": used_ocr,
         "ocr_available": ocr_available(),
+        "decimal_separator": decimal_separator,
     }
 
 
-def extract_labeled_values(text):
-    """Extract label/value pairs, preserving periods when detected."""
-    period_records = _extract_period_records_from_text(text)
+def extract_labeled_values(text, decimal_separator: str = None):
+    """Extract label/value pairs, preserving periods when detected.
+
+    `decimal_separator` : si None, détection automatique à partir de
+    tout le texte. Sinon ',' (français) ou '.' (anglais) force la
+    locale.
+    """
+    if decimal_separator is None:
+        decimal_separator = detect_decimal_separator(text)
+
+    period_records = _extract_period_records_from_text(
+        text, decimal_separator=decimal_separator
+    )
 
     if period_records:
         return _deduplicate_records(period_records)
@@ -921,7 +1018,9 @@ def extract_labeled_values(text):
         if colon_match:
             possible_label = colon_match.group(1).strip(" •-\t")
             possible_value = colon_match.group(2).strip()
-            parsed = parse_amount(possible_value)
+            parsed = parse_amount(
+                possible_value, decimal_separator=decimal_separator
+            )
 
             if possible_label and parsed is not None:
                 label = possible_label
@@ -933,7 +1032,9 @@ def extract_labeled_values(text):
             if match:
                 possible_label = match.group(1).strip(" •-\t")
                 possible_value = match.group(2).strip()
-                parsed = parse_amount(possible_value)
+                parsed = parse_amount(
+                    possible_value, decimal_separator=decimal_separator
+                )
 
                 if (
                     possible_label
