@@ -7,17 +7,17 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from bilanlens.extraction import extract_document
-from bilanlens.mapping import map_candidates, LABELS
+from bilanlens.extraction import extraire_document
+from bilanlens.mapping import associer_candidats, LIBELLES
 from bilanlens.analysis import (
-    calculate_ratios,
-    format_ratio,
-    interpret_ratio,
-    build_diagnostic,
-    complete_financial_values,
+    calculer_ratios,
+    formater_ratio,
+    interpreter_ratio,
+    construire_diagnostic,
+    completer_valeurs_financieres,
 )
-from bilanlens.sector import detect_out_of_scope_sector, SECTOR_MESSAGES
-from bilanlens.consistency import check_balance_sheet
+from bilanlens.sector import detecter_secteur_hors_perimetre, MESSAGES_SECTEUR
+from bilanlens.consistency import verifier_bilan
 
 
 # ---------------------------------------------------------------------------
@@ -41,11 +41,11 @@ st.write(
 # ---------------------------------------------------------------------------
 # Vérifications des clés
 # ---------------------------------------------------------------------------
-if not isinstance(LABELS, dict):
-    st.error("LABELS doit être un dictionnaire de postes financiers.")
+if not isinstance(LIBELLES, dict):
+    st.error("LIBELLES doit être un dictionnaire de postes financiers.")
     st.stop()
 
-if not all(isinstance(key, str) and key for key in LABELS):
+if not all(isinstance(cle, str) and cle for cle in LIBELLES):
     st.error("Chaque poste financier doit posséder une clé non vide.")
     st.stop()
 
@@ -53,35 +53,35 @@ if not all(isinstance(key, str) and key for key in LABELS):
 # ---------------------------------------------------------------------------
 # Ordre des familles de ratios
 # ---------------------------------------------------------------------------
-RATIO_FAMILIES = [
-    ("Liquidité", ["current_ratio", "quick_ratio"]),
-    ("Endettement", ["debt_to_equity", "equity_ratio"]),
-    ("Rentabilité", ["net_margin", "roe", "roa"]),
+FAMILLES_RATIOS = [
+    ("Liquidité", ["liquidite_generale", "liquidite_reduite"]),
+    ("Endettement", ["endettement", "autonomie_financiere"]),
+    ("Rentabilité", ["marge_nette", "rentabilite_capitaux_propres", "rentabilite_actifs"]),
     (
         "Activité",
-        ["inventory_turnover", "receivables_days", "supplier_days"],
+        ["rotation_stocks", "delai_clients", "delai_fournisseurs"],
     ),
-    ("Marché", ["per", "dividend_yield"]),
+    ("Marché", ["per", "rendement_dividende"]),
 ]
 
 
-def group_ratios(ratios):
+def regrouper_ratios(ratios):
     """Regroupe les ratios en conservant l'ordre défini."""
-    ratios_by_key = {ratio["key"]: ratio for ratio in ratios}
+    ratios_par_cle = {ratio["cle"]: ratio for ratio in ratios}
 
-    groups = []
+    groupes = []
 
-    for family_name, keys in RATIO_FAMILIES:
-        family_ratios = [
-            ratios_by_key[key]
-            for key in keys
-            if key in ratios_by_key
+    for nom_famille, cles in FAMILLES_RATIOS:
+        ratios_famille = [
+            ratios_par_cle[cle]
+            for cle in cles
+            if cle in ratios_par_cle
         ]
 
-        if family_ratios:
-            groups.append((family_name, family_ratios))
+        if ratios_famille:
+            groupes.append((nom_famille, ratios_famille))
 
-    return groups
+    return groupes
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +90,7 @@ def group_ratios(ratios):
 with st.sidebar:
     st.header("Mode de test")
 
-    use_sample = st.checkbox(
+    utiliser_exemple = st.checkbox(
         "Utiliser l'exemple synthétique intégré",
         value=False,
     )
@@ -112,18 +112,18 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 # Chargement du fichier
 # ---------------------------------------------------------------------------
-uploaded = st.file_uploader(
+charge = st.file_uploader(
     "Importer un bilan ou un rapport financier",
     type=["pdf", "xlsx", "xls", "csv", "txt", "docx"],
 )
 
-document_text = ""
-source_name = ""
-tables = []
-extracted_records = []
-source_signature = "no_document"
+texte_document = ""
+nom_source = ""
+tableaux = []
+enregistrements_extraits = []
+signature_source = "aucun_document"
 
-sample_path = (
+chemin_exemple = (
     Path(__file__).parent
     / "samples"
     / "exemple_bilan.txt"
@@ -133,51 +133,51 @@ sample_path = (
 # ---------------------------------------------------------------------------
 # 1. Extraction
 # ---------------------------------------------------------------------------
-used_ocr = False
-ocr_available_flag = False
+ocr_utilise = False
+indicateur_ocr_disponible = False
 
-if uploaded is not None:
+if charge is not None:
     try:
-        extracted = extract_document(uploaded)
+        extrait = extraire_document(charge)
 
-        document_text = extracted["text"]
-        tables = extracted["tables"]
-        extracted_records = extracted.get("records", [])
-        used_ocr = extracted.get("used_ocr", False)
-        ocr_available_flag = extracted.get("ocr_available", False)
-        source_name = uploaded.name
+        texte_document = extrait["texte"]
+        tableaux = extrait["tableaux"]
+        enregistrements_extraits = extrait.get("enregistrements", [])
+        ocr_utilise = extrait.get("ocr_utilise", False)
+        indicateur_ocr_disponible = extrait.get("ocr_disponible", False)
+        nom_source = charge.name
 
-        source_signature = hashlib.sha256(
-            uploaded.getvalue()
+        signature_source = hashlib.sha256(
+            charge.getvalue()
         ).hexdigest()
 
     except Exception as exc:
         st.error(f"Erreur de lecture : {exc}")
         st.stop()
 
-elif use_sample:
-    if not sample_path.exists():
+elif utiliser_exemple:
+    if not chemin_exemple.exists():
         st.error(
             "Le fichier d'exemple est introuvable : "
             "samples/exemple_bilan.txt"
         )
         st.stop()
 
-    document_text = sample_path.read_text(encoding="utf-8")
-    source_name = sample_path.name
+    texte_document = chemin_exemple.read_text(encoding="utf-8")
+    nom_source = chemin_exemple.name
 
-    source_signature = hashlib.sha256(
-        sample_path.read_bytes()
+    signature_source = hashlib.sha256(
+        chemin_exemple.read_bytes()
     ).hexdigest()
 
 
-if not document_text.strip():
+if not texte_document.strip():
     st.warning(
         "Aucun texte exploitable n'a été extrait. "
         "Le document peut être scanné ou nécessiter une vérification manuelle."
     )
 
-    if uploaded is None and not use_sample:
+    if charge is None and not utiliser_exemple:
         st.info(
             "Importez un document ou activez l'exemple synthétique "
             "dans la barre latérale."
@@ -186,18 +186,18 @@ if not document_text.strip():
     st.stop()
 
 
-st.caption(f"Document chargé : {source_name}")
+st.caption(f"Document chargé : {nom_source}")
 
 # -----------------------------------------------------------------------
 # Avertissements OCR et détection de secteur hors périmètre.
 # -----------------------------------------------------------------------
-if used_ocr:
+if ocr_utilise:
     st.warning(
         "📷 Valeurs issues de l'OCR : vérifiez-les attentivement. "
         "Les erreurs de reconnaissance (O/0, l/1, espaces parasites) "
         "sont fréquentes sur les documents scannés."
     )
-elif uploaded is not None and uploaded.name.lower().endswith(".pdf") and not document_text.strip() and not ocr_available_flag:
+elif charge is not None and charge.name.lower().endswith(".pdf") and not texte_document.strip() and not indicateur_ocr_disponible:
     st.info(
         "PDF scanné : installez Tesseract pour l'OCR "
         "(https://github.com/UB-Mannheim/tesseract/wiki). "
@@ -205,13 +205,13 @@ elif uploaded is not None and uploaded.name.lower().endswith(".pdf") and not doc
         "mais aucun texte n'a pu être extrait automatiquement."
     )
 
-_scope_warning = detect_out_of_scope_sector(document_text)
-if _scope_warning:
+_alerte_perimetre = detecter_secteur_hors_perimetre(texte_document)
+if _alerte_perimetre:
     st.error(
         "⚠️ Document hors périmètre détecté — secteur "
-        f"« {_scope_warning['sector']} ».\n\n"
-        f"{SECTOR_MESSAGES[_scope_warning['sector']]}\n\n"
-        f"Indices rencontrés : {', '.join(_scope_warning['matches'][:5])}."
+        f"« {_alerte_perimetre['secteur']} ».\n\n"
+        f"{MESSAGES_SECTEUR[_alerte_perimetre['secteur']]}\n\n"
+        f"Indices rencontrés : {', '.join(_alerte_perimetre['correspondances'][:5])}."
     )
     st.info(
         "Vous pouvez continuer, mais les ratios ne seront pas pertinents "
@@ -220,10 +220,10 @@ if _scope_warning:
 
 with st.expander("Aperçu du texte extrait"):
     st.text(
-        document_text[:12000]
+        texte_document[:12000]
         + (
             "\n… (aperçu tronqué)"
-            if len(document_text) > 12000
+            if len(texte_document) > 12000
             else ""
         )
     )
@@ -233,15 +233,15 @@ with st.expander("Aperçu du texte extrait"):
 # 2. Détection des postes et sélection de la période
 # ---------------------------------------------------------------------------
 try:
-    candidates = map_candidates(
-        document_text,
-        records=extracted_records or None,
+    candidats = associer_candidats(
+        texte_document,
+        enregistrements=enregistrements_extraits or None,
     )
 except Exception as exc:
     st.error(f"Erreur pendant la détection des postes : {exc}")
     st.stop()
 
-if not candidates:
+if not candidats:
     st.warning(
         "Aucune ligne financière avec valeur numérique n'a été reconnue."
     )
@@ -250,90 +250,90 @@ if not candidates:
     )
 
 
-def period_sort_key(period):
+def cle_tri_periode(periode):
     """Convertit une période JJ/MM/AAAA en date triable."""
-    if not period:
+    if not periode:
         return datetime.min.date()
 
     try:
-        return datetime.strptime(period, "%d/%m/%Y").date()
+        return datetime.strptime(periode, "%d/%m/%Y").date()
     except (ValueError, TypeError):
         return datetime.min.date()
 
 
-available_periods = sorted(
+periodes_disponibles = sorted(
     {
-        candidate.get("period")
-        for candidate in candidates
-        if candidate.get("period")
+        candidat.get("periode")
+        for candidat in candidats
+        if candidat.get("periode")
     },
-    key=period_sort_key,
+    key=cle_tri_periode,
 )
 
-latest_period = (
-    max(available_periods, key=period_sort_key)
-    if available_periods
+derniere_periode = (
+    max(periodes_disponibles, key=cle_tri_periode)
+    if periodes_disponibles
     else None
 )
 
-if latest_period:
-    analysis_candidates = [
-        candidate
-        for candidate in candidates
-        if candidate.get("period") == latest_period
+if derniere_periode:
+    candidats_analyse = [
+        candidat
+        for candidat in candidats
+        if candidat.get("periode") == derniere_periode
     ]
 
     st.info(
         f"Période utilisée par défaut pour les ratios : "
-        f"**{latest_period}**. Les exercices précédents restent "
+        f"**{derniere_periode}**. Les exercices précédents restent "
         "disponibles dans le tableau des lignes détectées."
     )
 else:
-    analysis_candidates = candidates
+    candidats_analyse = candidats
 
 
 # ---------------------------------------------------------------------------
 # Préparation des valeurs détectées et des doublons
 # ---------------------------------------------------------------------------
-defaults = {}
-default_ranks = {}
-ambiguous_fields = {}
+valeurs_defaut = {}
+rangs_defaut = {}
+champs_ambigus = {}
 
-for candidate in analysis_candidates:
-    key = candidate.get("key")
+for candidat in candidats_analyse:
+    cle = candidat.get("cle")
 
-    if not key:
+    if not cle:
         continue
 
-    if key not in LABELS:
+    if cle not in LIBELLES:
         continue
 
-    rank = candidate.get("rank", 0)
-    if key not in defaults or rank > default_ranks.get(key, -1):
-        defaults[key] = candidate["value"]
-        default_ranks[key] = rank
-    ambiguous_fields.setdefault(key, []).append(candidate)
+    rang = candidat.get("rang", 0)
+    if cle not in valeurs_defaut or rang > rangs_defaut.get(cle, -1):
+        valeurs_defaut[cle] = candidat["valeur"]
+        rangs_defaut[cle] = rang
+    champs_ambigus.setdefault(cle, []).append(candidat)
 
 
 # ---------------------------------------------------------------------------
 # 3. Réinitialisation si le document ou les valeurs détectées changent
 # ---------------------------------------------------------------------------
-defaults_signature = hashlib.sha256(
+signature_valeurs_defaut = hashlib.sha256(
     json.dumps(
-        defaults,
+        valeurs_defaut,
         sort_keys=True,
         default=str,
     ).encode("utf-8")
 ).hexdigest()
 
-full_signature = f"{source_signature}:{defaults_signature}"
+signature_complete = f"{signature_source}:{signature_valeurs_defaut}"
 
-if st.session_state.get("_source_signature") != full_signature:
-    for state_key in list(st.session_state.keys()):
-        if state_key.startswith(("val_", "has_")):
-            del st.session_state[state_key]
+if st.session_state.get("_signature_source") != signature_complete:
+    for cle_etat in list(st.session_state.keys()):
+        if cle_etat.startswith(("val_", "a_")):
+            del st.session_state[cle_etat]
 
-    st.session_state["_source_signature"] = full_signature
+    st.session_state["_signature_source"] = signature_complete
 
 
 # ---------------------------------------------------------------------------
@@ -346,93 +346,93 @@ st.write(
     "Vérifiez les montants et les correspondances avant de calculer les ratios."
 )
 
-for key, items in ambiguous_fields.items():
-    if len({item["value"] for item in items}) > 1:
+for cle, elements in champs_ambigus.items():
+    if len({element["valeur"] for element in elements}) > 1:
         st.warning(
             f"Plusieurs montants différents correspondent à "
-            f"« {LABELS[key]} ». Vérifiez la valeur proposée."
+            f"« {LIBELLES[cle]} ». Vérifiez la valeur proposée."
         )
 
         st.dataframe(
             pd.DataFrame([
                 {
-                    "Intitulé extrait": item.get("label", ""),
-                    "Montant": item.get("value"),
-                    "Période": item.get("period") or "Non précisée",
+                    "Intitulé extrait": element.get("libelle", ""),
+                    "Montant": element.get("valeur"),
+                    "Période": element.get("periode") or "Non précisée",
                 }
-                for item in items
+                for element in elements
             ]),
             use_container_width=True,
             hide_index=True,
         )
 
 
-# Les clés du dictionnaire LABELS sont uniques par construction.
+# Les clés du dictionnaire LIBELLES sont uniques par construction.
 # Chaque widget possède une clé préfixée distincte.
-keys = list(LABELS.keys())
-value_map = {}
+cles = list(LIBELLES.keys())
+table_valeurs = {}
 
-with st.form("financial_inputs"):
-    cols = st.columns(2)
+with st.form("saisie_financiere"):
+    colonnes = st.columns(2)
 
-    for idx, field_key in enumerate(keys):
-        raw = defaults.get(field_key)
+    for idx, cle_champ in enumerate(cles):
+        brut = valeurs_defaut.get(cle_champ)
 
-        with cols[idx % 2]:
-            entered = st.number_input(
-                LABELS[field_key],
-                value=float(raw) if raw is not None else 0.0,
+        with colonnes[idx % 2]:
+            saisi = st.number_input(
+                LIBELLES[cle_champ],
+                value=float(brut) if brut is not None else 0.0,
                 step=100.0,
                 format="%.2f",
-                key=f"val_{field_key}",
+                key=f"val_{cle_champ}",
                 help=(
                     "Valeur proposée à partir du document. "
                     "Vérifiez le montant et son unité."
                 ),
             )
 
-            has_value = st.checkbox(
-                f"Valeur disponible : {LABELS[field_key]}",
-                value=(raw is not None),
-                key=f"has_{field_key}",
+            valeur_disponible = st.checkbox(
+                f"Valeur disponible : {LIBELLES[cle_champ]}",
+                value=(brut is not None),
+                key=f"a_{cle_champ}",
                 help=(
                     "Décochez cette case si la donnée est absente du document. "
                     "Une donnée absente n'est pas égale à zéro."
                 ),
             )
 
-            value_map[field_key] = (
-                float(entered) if has_value else None
+            table_valeurs[cle_champ] = (
+                float(saisi) if valeur_disponible else None
             )
 
-    submitted = st.form_submit_button("Calculer les ratios")
+    soumis = st.form_submit_button("Calculer les ratios")
 
 
 # ---------------------------------------------------------------------------
 # 5. Tableau des lignes détectées automatiquement
 # ---------------------------------------------------------------------------
-if candidates:
+if candidats:
     with st.expander(
         "Table des lignes détectées automatiquement",
         expanded=False,
     ):
-        df = pd.DataFrame(candidates)
+        df = pd.DataFrame(candidats)
 
-        columns_to_show = [
-            column
-            for column in [
-                "label",
-                "value",
-                "period",
-                "canonical_label",
-                "confidence",
-                "source_line",
+        colonnes_a_afficher = [
+            colonne
+            for colonne in [
+                "libelle",
+                "valeur",
+                "periode",
+                "libelle_canonique",
+                "confiance",
+                "ligne_source",
             ]
-            if column in df.columns
+            if colonne in df.columns
         ]
 
         st.dataframe(
-            df[columns_to_show],
+            df[colonnes_a_afficher],
             use_container_width=True,
             hide_index=True,
         )
@@ -441,25 +441,25 @@ if candidates:
 # ---------------------------------------------------------------------------
 # 6. Calcul et affichage des résultats
 # ---------------------------------------------------------------------------
-if submitted:
-    entered_values = value_map.copy()
+if soumis:
+    valeurs_saisies = table_valeurs.copy()
 
-    completed_values = complete_financial_values(
-        entered_values
+    valeurs_completees = completer_valeurs_financieres(
+        valeurs_saisies
     )
 
-    ratios = calculate_ratios(completed_values)
-    ratio_groups = group_ratios(ratios)
+    ratios = calculer_ratios(valeurs_completees)
+    groupes_ratios = regrouper_ratios(ratios)
 
-    ordered_ratios = [
+    ratios_ordonnes = [
         ratio
-        for _, family_ratios in ratio_groups
-        for ratio in family_ratios
+        for _, ratios_famille in groupes_ratios
+        for ratio in ratios_famille
     ]
 
-    diagnostic = build_diagnostic(
-        completed_values,
-        ordered_ratios,
+    diagnostic = construire_diagnostic(
+        valeurs_completees,
+        ratios_ordonnes,
     )
 
     # -----------------------------------------------------------------------
@@ -467,27 +467,27 @@ if submitted:
     # -----------------------------------------------------------------------
     st.header("2. Vérification des postes complétés")
 
-    calculated_rows = []
+    lignes_calculees = []
 
-    for key, label in LABELS.items():
-        original = entered_values.get(key)
-        completed = completed_values.get(key)
+    for cle, libelle in LIBELLES.items():
+        originale = valeurs_saisies.get(cle)
+        completee = valeurs_completees.get(cle)
 
-        if original is None and completed is not None:
-            calculated_rows.append({
-                "Poste comptable": label,
-                "Montant calculé": completed,
+        if originale is None and completee is not None:
+            lignes_calculees.append({
+                "Poste comptable": libelle,
+                "Montant calculé": completee,
                 "Origine": "Calcul automatique à partir des composants",
             })
 
-    if calculated_rows:
+    if lignes_calculees:
         st.success(
             "Certains postes absents ont pu être calculés "
             "à partir des valeurs renseignées."
         )
 
         st.dataframe(
-            pd.DataFrame(calculated_rows),
+            pd.DataFrame(lignes_calculees),
             use_container_width=True,
             hide_index=True,
         )
@@ -500,24 +500,24 @@ if submitted:
     # -----------------------------------------------------------------------
     # 6.2 Postes importants encore absents
     # -----------------------------------------------------------------------
-    missing_labels = [
-        LABELS[key]
-        for key in [
-            "current_assets",
-            "current_liabilities",
-            "total_assets",
-            "equity",
-            "total_debt",
-            "revenue",
-            "net_income",
+    libelles_manquants = [
+        LIBELLES[cle]
+        for cle in [
+            "actifs_courants",
+            "passifs_courants",
+            "total_actif",
+            "capitaux_propres",
+            "total_dettes",
+            "chiffre_affaires",
+            "resultat_net",
         ]
-        if key in LABELS and completed_values.get(key) is None
+        if cle in LIBELLES and valeurs_completees.get(cle) is None
     ]
 
-    if missing_labels:
+    if libelles_manquants:
         st.warning(
             "Les postes suivants restent indisponibles : "
-            + ", ".join(missing_labels)
+            + ", ".join(libelles_manquants)
             + ". Certains ratios ne pourront pas être calculés."
         )
 
@@ -526,52 +526,52 @@ if submitted:
     # -----------------------------------------------------------------------
     st.header("3. Contrôles de cohérence")
 
-    checks = check_balance_sheet(completed_values)
-    for check in checks:
-        if check["status"] == "ok":
-            st.success(f"✅ {check['name']} — {check['detail']}")
-        elif check["status"] == "warning":
-            st.warning(f"⚠️ {check['name']} — {check['detail']}")
+    controles = verifier_bilan(valeurs_completees)
+    for controle in controles:
+        if controle["statut"] == "ok":
+            st.success(f"✅ {controle['nom']} — {controle['detail']}")
+        elif controle["statut"] == "alerte":
+            st.warning(f"⚠️ {controle['nom']} — {controle['detail']}")
         else:
-            st.info(f"⏭️ {check['name']} — {check['detail']}")
+            st.info(f"⏭️ {controle['nom']} — {controle['detail']}")
 
     # -----------------------------------------------------------------------
     # 6.3 Résultats regroupés par famille
     # -----------------------------------------------------------------------
     st.header("4. Résultats")
 
-    for family_name, family_ratios in ratio_groups:
-        st.subheader(family_name)
-        metric_cols = st.columns(3)
+    for nom_famille, ratios_famille in groupes_ratios:
+        st.subheader(nom_famille)
+        colonnes_metriques = st.columns(3)
 
-        for idx, ratio in enumerate(family_ratios):
-            with metric_cols[idx % 3]:
+        for idx, ratio in enumerate(ratios_famille):
+            with colonnes_metriques[idx % 3]:
                 st.metric(
-                    ratio["name"],
-                    format_ratio(ratio),
+                    ratio["nom"],
+                    formater_ratio(ratio),
                 )
-                st.caption(ratio["formula"])
+                st.caption(ratio["formule"])
 
     # -----------------------------------------------------------------------
     # 6.4 Interprétation regroupée par famille
     # -----------------------------------------------------------------------
     st.header("5. Interprétation")
 
-    for family_name, family_ratios in ratio_groups:
-        st.subheader(family_name)
+    for nom_famille, ratios_famille in groupes_ratios:
+        st.subheader(nom_famille)
 
-        for ratio in family_ratios:
+        for ratio in ratios_famille:
             with st.expander(
-                f"{ratio['name']} : {format_ratio(ratio)}",
+                f"{ratio['nom']} : {formater_ratio(ratio)}",
                 expanded=True,
             ):
-                st.write(f"**Formule :** {ratio['formula']}")
+                st.write(f"**Formule :** {ratio['formule']}")
 
                 st.write(
-                    interpret_ratio(
-                        ratio["key"],
-                        ratio["value"],
-                        ordered_ratios,
+                    interpreter_ratio(
+                        ratio["cle"],
+                        ratio["valeur"],
+                        ratios_ordonnes,
                     )
                 )
 
@@ -582,21 +582,21 @@ if submitted:
     # -----------------------------------------------------------------------
     st.header("6. Diagnostic financier indicatif")
 
-    left, right = st.columns(2)
+    gauche, droite = st.columns(2)
 
-    with left:
+    with gauche:
         st.subheader("Points forts potentiels")
-        for item in diagnostic["strengths"]:
-            st.success(item)
+        for element in diagnostic["points_forts"]:
+            st.success(element)
 
-    with right:
+    with droite:
         st.subheader("Risques à examiner")
-        for item in diagnostic["risks"]:
-            st.warning(item)
+        for element in diagnostic["risques"]:
+            st.warning(element)
 
     st.subheader("Précautions")
-    for item in diagnostic["caveats"]:
-        st.info(item)
+    for element in diagnostic["precautions"]:
+        st.info(element)
 
     # La conclusion est toujours affichée à la fin du diagnostic.
     st.subheader("Conclusion globale")
@@ -606,72 +606,72 @@ if submitted:
     # 7. Préparer les exports dans le même ordre que l'affichage
     # -----------------------------------------------------------------------
     export = {
-        "document": source_name,
-        "period": latest_period,
-        "values": completed_values,
-        "original_entered_values": entered_values,
-        "automatically_calculated_fields": calculated_rows,
-        "ratio_families": [
+        "document": nom_source,
+        "periode": derniere_periode,
+        "valeurs": valeurs_completees,
+        "valeurs_saisies_initiales": valeurs_saisies,
+        "champs_calcules_automatiquement": lignes_calculees,
+        "familles_ratios": [
             {
-                "family": family_name,
+                "famille": nom_famille,
                 "ratios": [
                     {
                         **ratio,
-                        "display_value": format_ratio(ratio),
-                        "interpretation": interpret_ratio(
-                            ratio["key"],
-                            ratio["value"],
-                            ordered_ratios,
+                        "valeur_affichee": formater_ratio(ratio),
+                        "interpretation": interpreter_ratio(
+                            ratio["cle"],
+                            ratio["valeur"],
+                            ratios_ordonnes,
                         ),
                     }
-                    for ratio in family_ratios
+                    for ratio in ratios_famille
                 ],
             }
-            for family_name, family_ratios in ratio_groups
+            for nom_famille, ratios_famille in groupes_ratios
         ],
         "ratios": [
             {
                 **ratio,
-                "display_value": format_ratio(ratio),
-                "interpretation": interpret_ratio(
-                    ratio["key"],
-                    ratio["value"],
-                    ordered_ratios,
+                "valeur_affichee": formater_ratio(ratio),
+                "interpretation": interpreter_ratio(
+                    ratio["cle"],
+                    ratio["valeur"],
+                    ratios_ordonnes,
                 ),
             }
-            for ratio in ordered_ratios
+            for ratio in ratios_ordonnes
         ],
-        "consistency_checks": checks,
+        "controles_coherence": controles,
         "diagnostic": diagnostic,
-        "disclaimer": (
+        "avertissement": (
             "Analyse pédagogique indicative. Vérifier les données extraites, "
             "les formules et les normes du cours. Les sous-totaux calculés "
             "dépendent des composants renseignés et peuvent être incomplets."
         ),
     }
 
-    json_bytes = json.dumps(
+    octets_json = json.dumps(
         export,
         ensure_ascii=False,
         indent=2,
         default=str,
     ).encode("utf-8")
 
-    csv_df = pd.DataFrame([
+    df_csv = pd.DataFrame([
         {
-            "famille": family_name,
-            "ratio": ratio["name"],
-            "value": ratio["value"],
-            "formatted": format_ratio(ratio),
-            "formula": ratio["formula"],
-            "interpretation": interpret_ratio(
-                ratio["key"],
-                ratio["value"],
-                ordered_ratios,
+            "famille": nom_famille,
+            "ratio": ratio["nom"],
+            "valeur": ratio["valeur"],
+            "valeur_formatee": formater_ratio(ratio),
+            "formule": ratio["formule"],
+            "interpretation": interpreter_ratio(
+                ratio["cle"],
+                ratio["valeur"],
+                ratios_ordonnes,
             ),
         }
-        for family_name, family_ratios in ratio_groups
-        for ratio in family_ratios
+        for nom_famille, ratios_famille in groupes_ratios
+        for ratio in ratios_famille
     ])
 
     # -----------------------------------------------------------------------
@@ -684,7 +684,7 @@ if submitted:
     with c1:
         st.download_button(
             "Exporter les résultats en JSON",
-            data=json_bytes,
+            data=octets_json,
             file_name="bilanlens_resultats.json",
             mime="application/json",
         )
@@ -692,7 +692,7 @@ if submitted:
     with c2:
         st.download_button(
             "Exporter les ratios en CSV",
-            data=csv_df.to_csv(
+            data=df_csv.to_csv(
                 index=False,
             ).encode("utf-8-sig"),
             file_name="bilanlens_ratios.csv",

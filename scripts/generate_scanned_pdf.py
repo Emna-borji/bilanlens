@@ -10,7 +10,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 
-DEFAULT_FONT_PATHS = [
+CHEMINS_POLICE_DEFAUT = [
     r"C:\Windows\Fonts\arial.ttf",
     r"C:\Windows\Fonts\DejaVuSans.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -19,65 +19,65 @@ DEFAULT_FONT_PATHS = [
 ]
 
 
-def _pick_font(size):
-    for candidate in DEFAULT_FONT_PATHS:
-        if Path(candidate).exists():
+def _choisir_police(taille):
+    for candidat in CHEMINS_POLICE_DEFAUT:
+        if Path(candidat).exists():
             try:
-                return ImageFont.truetype(candidate, size)
+                return ImageFont.truetype(candidat, taille)
             except OSError:
                 continue
     return ImageFont.load_default()
 
 
-def _render_pages(text: str, font_size: int = 22):
-    width, height = 1700, 2200
-    margin = 80
-    line_spacing = 10
-    font = _pick_font(font_size)
+def _rendre_pages(texte: str, taille_police: int = 22):
+    largeur, hauteur = 1700, 2200
+    marge = 80
+    interligne = 10
+    police = _choisir_police(taille_police)
 
-    lines = text.splitlines() or [""]
+    lignes = texte.splitlines() or [""]
     images = []
-    current = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(current)
-    y = margin
+    courante = Image.new("RGB", (largeur, hauteur), "white")
+    stylo = ImageDraw.Draw(courante)
+    y = marge
 
-    for line in lines:
-        bbox = draw.textbbox((0, 0), line or " ", font=font)
-        line_height = bbox[3] - bbox[1]
-        if y + line_height > height - margin:
-            images.append(current)
-            current = Image.new("RGB", (width, height), "white")
-            draw = ImageDraw.Draw(current)
-            y = margin
-        draw.text((margin, y), line, fill="black", font=font)
-        y += line_height + line_spacing
+    for ligne in lignes:
+        bbox = stylo.textbbox((0, 0), ligne or " ", font=police)
+        hauteur_ligne = bbox[3] - bbox[1]
+        if y + hauteur_ligne > hauteur - marge:
+            images.append(courante)
+            courante = Image.new("RGB", (largeur, hauteur), "white")
+            stylo = ImageDraw.Draw(courante)
+            y = marge
+        stylo.text((marge, y), ligne, fill="black", font=police)
+        y += hauteur_ligne + interligne
 
-    images.append(current)
+    images.append(courante)
     return images
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("src", help="Fichier texte source (.txt)")
-    parser.add_argument("dst", help="PDF scanné à écrire")
-    parser.add_argument("--font-size", type=int, default=22)
-    args = parser.parse_args()
+    parseur = argparse.ArgumentParser(description=__doc__)
+    parseur.add_argument("src", help="Fichier texte source (.txt)")
+    parseur.add_argument("dst", help="PDF scanné à écrire")
+    parseur.add_argument("--font-size", type=int, default=22)
+    args = parseur.parse_args()
 
-    src_path = Path(args.src)
-    dst_path = Path(args.dst)
-    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    chemin_src = Path(args.src)
+    chemin_dst = Path(args.dst)
+    chemin_dst.parent.mkdir(parents=True, exist_ok=True)
 
-    text = src_path.read_text(encoding="utf-8")
-    pages = _render_pages(text, args.font_size)
-    first, *rest = pages
-    first.save(
-        dst_path,
+    texte = chemin_src.read_text(encoding="utf-8")
+    pages = _rendre_pages(texte, args.font_size)
+    premiere, *reste = pages
+    premiere.save(
+        chemin_dst,
         "PDF",
         resolution=300,
         save_all=True,
-        append_images=rest,
+        append_images=reste,
     )
-    print(f"PDF scanné écrit : {dst_path} ({len(pages)} page(s))")
+    print(f"PDF scanné écrit : {chemin_dst} ({len(pages)} page(s))")
 
 
 if __name__ == "__main__":
