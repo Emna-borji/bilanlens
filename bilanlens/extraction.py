@@ -238,7 +238,7 @@ def _construire_dataframe(lignes):
 def detecter_separateur_decimal(texte: str) -> str:
     """Détecte le séparateur décimal utilisé par un document.
 
-    Retourne ',' pour un document francophone (SCF tunisien, PCG français,
+    Retourne ',' pour un document francophone (SCE tunisien, PCG français,
     ex. « 1 281 772 854,965 »), ou '.' pour un document anglophone
     (IFRS, ex. « 1,281,772,854.965 »).
 
@@ -250,7 +250,7 @@ def detecter_separateur_decimal(texte: str) -> str:
     - Au moins un nombre espace(s)-de-milliers puis virgule décimale
       (« 1 281,965 ») → français.
 
-    Défaut : français (SCF tunisien).
+    Défaut : français (SCE tunisien).
     """
     if not texte:
         return ","

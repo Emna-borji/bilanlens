@@ -11,7 +11,8 @@ Seul l'OCR (optionnel) utilise un modèle entraîné externe (Tesseract).
 ## Périmètre
 
 **Dans le périmètre.** Sociétés industrielles et commerciales :
-- normes SCF tunisien, PCG français, IFRS anglais ;
+- normes comptables tunisiennes (Système Comptable des Entreprises,
+  SCE), PCG français, IFRS anglais ;
 - formats PDF (texte ou scanné via OCR), XLSX, CSV, TXT, DOCX ;
 - bilans sur plusieurs exercices (N, N-1, N-2…) : BilanLens choisit la
   période la plus récente par défaut.
@@ -25,8 +26,8 @@ avertissement : les ratios industriels n'y sont pas pertinents.
 
 - Import PDF, Excel multi-feuilles, CSV, TXT, DOCX.
 - Lecture de PDF à texte et de **PDF scannés via OCR** (fra + eng).
-- Reconnaissance des libellés en français (SCF, PCG, MAJUSCULES SANS
-  ACCENTS) et en anglais (IFRS).
+- Reconnaissance des libellés en français (SCE tunisien, PCG français,
+  MAJUSCULES SANS ACCENTS) et en anglais (IFRS).
 - Correspondance **exacte** des alias ; les sous-totaux officiels
   (« Total ... », « Capitaux propres », « Actif immobilisé »...)
   l'emportent sur les composants (« Immobilisations corporelles »,
@@ -94,9 +95,25 @@ streamlit run app.py
 
 ## Lancer les tests
 
-```bash
-pytest -v
+**Toujours lancer pytest via le Python du venv local**, pas le
+pytest global du PATH : les paquets `pytesseract`, `pymupdf` et
+`pdf2image` sont installés dans `.venv` et un pytest du Python
+système ne les voit pas (les tests OCR seraient alors silencieusement
+sautés).
+
+```powershell
+# Windows (PowerShell)
+.\.venv\Scripts\python.exe -m pytest -v
 ```
+
+```bash
+# macOS / Linux
+.venv/bin/python -m pytest -v
+```
+
+Alternative : activer le venv d'abord (`.\.venv\Scripts\activate`
+sous Windows, `source .venv/bin/activate` sous macOS/Linux), puis
+lancer `pytest -v`.
 
 - Les tests marqués `ocr` sont automatiquement sautés si Tesseract
   (binaire + langue `fra`) n'est pas disponible.
@@ -106,8 +123,8 @@ pytest -v
 
 Pour n'exécuter que les tests rapides :
 
-```bash
-pytest -v -m "not real and not ocr"
+```powershell
+.\.venv\Scripts\python.exe -m pytest -v -m "not real and not ocr"
 ```
 
 ## Sources des bilans de test

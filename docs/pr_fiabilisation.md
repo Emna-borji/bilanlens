@@ -3,7 +3,8 @@
 ## Résumé
 
 Fiabilisation de BilanLens (ex-FinSight) sur un éventail large de bilans
-industriels / commerciaux : SCF tunisien, PCG français, IFRS anglais ;
+industriels / commerciaux : SCE tunisien (Système Comptable des
+Entreprises), PCG français, IFRS anglais ;
 PDF à texte, PDF scannés via OCR, XLSX multi-feuilles, CSV, TXT, DOCX.
 Banques et assurances sont détectées et signalées hors périmètre.
 
@@ -27,7 +28,7 @@ Banques et assurances sont détectées et signalées hors périmètre.
 
 ### Mapping
 - `normalize()` supprime désormais les accents : les libellés en
-  MAJUSCULES SANS ACCENTS (variante SCF formelle) sont reconnus.
+  MAJUSCULES SANS ACCENTS (variante SCE formelle) sont reconnus.
 - Alias étendus pour PCG français (Actif immobilisé, Actif circulant,
   Capital, Dettes à long terme, Immobilisations corporelles nettes…) et
   IFRS anglais (Total non-current assets, Property, plant and equipment,

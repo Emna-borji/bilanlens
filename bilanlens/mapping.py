@@ -333,7 +333,7 @@ _RANG1_EXPLICITE = {
     "fonds propres",
     "dettes a long terme", "dettes long terme",
     "dettes a court terme", "dettes court terme",
-    # SCF / IFRS courants.
+    # SCE / IFRS courants.
     "equity",
     "current assets", "non-current assets",
     "current liabilities", "non-current liabilities",

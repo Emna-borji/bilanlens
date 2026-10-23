@@ -100,7 +100,7 @@ def test_synth_ifrs_en():
 
 
 # ---------------------------------------------------------------------------
-# Libellés en MAJUSCULES SANS ACCENTS (variante SCF tunisien formelle).
+# Libellés en MAJUSCULES SANS ACCENTS (variante SCE tunisien formelle).
 # ---------------------------------------------------------------------------
 def test_synth_uppercase_sans_accents():
     valeurs, ratios, controles, _ = executer_pipeline(
