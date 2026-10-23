@@ -39,8 +39,9 @@ avertissement : les ratios industriels n'y sont pas pertinents.
   - capital + réserves + résultat ≈ capitaux propres.
   Un écart > 1 % déclenche une alerte.
 - Détection des bilans **bancaires et d'assurance** (hors périmètre).
-- Calcul des 12 ratios regroupés en 5 familles : liquidité, endettement,
-  rentabilité, activité, marché.
+- Calcul des 12 ratios de la fiche de cours (Master Data Science – Analyse
+  Financière) regroupés en 5 familles : liquidité, endettement, rentabilité,
+  activité, marché.
 - Diagnostic explicable (points forts, risques, précautions, conclusion
   dynamique).
 - Export des résultats en CSV et JSON (avec les contrôles de cohérence).
@@ -153,22 +154,38 @@ scripts/
 
 ## Ratios calculés
 
+Les 12 ratios suivent exactement la fiche de cours (Master Data Science –
+Analyse Financière). Aucun autre ratio n'est produit.
+
 | Famille | Ratio | Formule |
 |---------|-------|---------|
-| Liquidité | Liquidité générale | Actifs courants / Passifs courants |
-| Liquidité | Liquidité réduite | (Actifs courants − Stocks) / Passifs courants |
-| Endettement | Endettement | Total des dettes / Capitaux propres |
-| Endettement | Autonomie financière | Capitaux propres / Total actif |
-| Rentabilité | Marge nette | Résultat net / Chiffre d'affaires |
-| Rentabilité | ROE | Résultat net / Capitaux propres |
-| Rentabilité | ROA | Résultat net / Total actif |
-| Activité | Rotation des stocks | Coût des ventes / Stock moyen |
-| Activité | Délai clients | Créances clients / CA × 365 |
-| Activité | Délai fournisseurs | Dettes fournisseurs / Achats TTC × 365 |
-| Marché | PER | Cours / Bénéfice par action |
-| Marché | Rendement du dividende | Dividende / Cours |
+| Ratios de liquidité | Liquidité générale | Actifs courants / Dettes à court terme |
+| Ratios de liquidité | Liquidité réduite (quick ratio) | (Actifs courants − Stocks) / Dettes à court terme |
+| Ratios d'endettement (structure financière) | Endettement global | Dettes totales / Capitaux propres |
+| Ratios d'endettement (structure financière) | Autonomie financière | Capitaux propres / Total passif |
+| Ratios de rentabilité | Rentabilité nette | Résultat net / Chiffre d'affaires |
+| Ratios de rentabilité | Rentabilité des capitaux propres (ROE) | Résultat net / Capitaux propres |
+| Ratios de rentabilité | Rentabilité économique (ROA) | Résultat net / Total actif |
+| Ratios d'activité (efficience) | Rotation des stocks | Coût des ventes / Stock moyen |
+| Ratios d'activité (efficience) | Délai de recouvrement clients | (Créances clients / CA) × 365 |
+| Ratios d'activité (efficience) | Délai de paiement fournisseurs | (Dettes fournisseurs / Achats TTC) × 365 |
+| Ratios de marché (si données boursières) | PER | Cours de l'action / Bénéfice par action |
+| Ratios de marché (si données boursières) | Dividend Yield | Dividende par action / Cours de l'action |
 
-Les seuils d'interprétation sont indicatifs et varient selon le secteur.
+Seuils du cours utilisés :
+
+- Liquidité générale : idéal > 1 ; en deçà, les actifs courants ne couvrent
+  pas les dettes à court terme.
+- Endettement global : > 1 signale une dépendance élevée au financement
+  externe ; ≤ 1 une structure financière équilibrée.
+
+Les autres ratios n'ont pas de seuil dans la fiche de cours ; BilanLens
+affiche alors un repère **indicatif, hors cours**.
+
+Autonomie financière : BilanLens utilise *Capitaux propres / Total passif*
+(total des capitaux propres et des passifs). Si le Total passif n'est pas
+disponible dans le document, il est remplacé par le Total actif, équivalent
+par équilibre du bilan — ce choix est signalé dans la note du ratio.
 
 ## Limites connues
 

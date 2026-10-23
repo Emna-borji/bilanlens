@@ -15,6 +15,7 @@ from bilanlens.analysis import (
     interpreter_ratio,
     construire_diagnostic,
     completer_valeurs_financieres,
+    NOTE_SEUILS_COURS,
 )
 from bilanlens.sector import detecter_secteur_hors_perimetre, MESSAGES_SECTEUR
 from bilanlens.consistency import verifier_bilan
@@ -54,14 +55,23 @@ if not all(isinstance(cle, str) and cle for cle in LIBELLES):
 # Ordre des familles de ratios
 # ---------------------------------------------------------------------------
 FAMILLES_RATIOS = [
-    ("Liquidité", ["liquidite_generale", "liquidite_reduite"]),
-    ("Endettement", ["endettement", "autonomie_financiere"]),
-    ("Rentabilité", ["marge_nette", "rentabilite_capitaux_propres", "rentabilite_actifs"]),
+    ("Ratios de liquidité", ["liquidite_generale", "liquidite_reduite"]),
     (
-        "Activité",
+        "Ratios d'endettement (structure financière)",
+        ["endettement", "autonomie_financiere"],
+    ),
+    (
+        "Ratios de rentabilité",
+        ["marge_nette", "rentabilite_capitaux_propres", "rentabilite_actifs"],
+    ),
+    (
+        "Ratios d'activité (efficience)",
         ["rotation_stocks", "delai_clients", "delai_fournisseurs"],
     ),
-    ("Marché", ["per", "rendement_dividende"]),
+    (
+        "Ratios de marché (si données boursières)",
+        ["per", "rendement_dividende"],
+    ),
 ]
 
 
@@ -557,6 +567,8 @@ if soumis:
     # -----------------------------------------------------------------------
     st.header("5. Interprétation")
 
+    st.info(NOTE_SEUILS_COURS)
+
     for nom_famille, ratios_famille in groupes_ratios:
         st.subheader(nom_famille)
 
@@ -608,6 +620,7 @@ if soumis:
     export = {
         "document": nom_source,
         "periode": derniere_periode,
+        "note_seuils": NOTE_SEUILS_COURS,
         "valeurs": valeurs_completees,
         "valeurs_saisies_initiales": valeurs_saisies,
         "champs_calcules_automatiquement": lignes_calculees,
