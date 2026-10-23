@@ -48,3 +48,7 @@ dist/
 
 # OCR intermédiaires
 *.ocr.cache
+
+# Fichiers personnels (dépôt public)
+/notes
+/FinSight Agent*.pdf
