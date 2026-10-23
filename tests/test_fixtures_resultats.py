@@ -5,130 +5,128 @@ et le .pdf. Les deux formats doivent donner les mêmes postes et ratios.
 """
 import pytest
 
-from conftest import load
-from _pipeline import run_pipeline
+from conftest import charger
+from _pipeline import executer_pipeline
 
 
-def _run(file_name):
-    values, ratios, _checks, _extra = run_pipeline(load(file_name))
-    return values, ratios
+def _executer(nom_fichier):
+    valeurs, ratios, _controles, _extra = executer_pipeline(charger(nom_fichier))
+    return valeurs, ratios
 
 
-def _assert_test1(values, ratios):
+def _assert_test1(valeurs, ratios):
     """Postes et ratios attendus pour test1 (format .txt ou .pdf)."""
     # Les postes-clé doivent provenir des libellés EXACTS, pas des pièges.
-    assert values["current_assets"] == 3500
-    assert values["current_liabilities"] == 2000
-    assert values["total_assets"] == 8500
+    assert valeurs["actifs_courants"] == 3500
+    assert valeurs["passifs_courants"] == 2000
+    assert valeurs["total_actif"] == 8500
     # IMPORTANT : « Total passif et capitaux propres : 8 500 » placé avant
-    # « Capitaux propres : 4 000 » ne doit PAS être mappé à equity.
-    assert values["equity"] == 4000
-    assert values["total_debt"] == 4500
-    assert values["revenue"] == 12000
-    assert values["net_income"] == 700
-    assert values["cost_of_goods_sold"] == 6800
-    assert values["supplier_payables"] == 1400
-    assert values["purchases_incl_vat"] == 8330
-    assert values["inventory"] == 1200
-    assert values["receivables"] == 1500
-    assert values["beginning_inventory"] == 1000
-    assert values["ending_inventory"] == 1200
-    assert values["share_price"] == 42
-    assert values["earnings_per_share"] == pytest.approx(3.5, abs=0.01)
-    assert values["dividend_per_share"] == pytest.approx(1.2, abs=0.01)
+    # « Capitaux propres : 4 000 » ne doit PAS être mappé à capitaux_propres.
+    assert valeurs["capitaux_propres"] == 4000
+    assert valeurs["total_dettes"] == 4500
+    assert valeurs["chiffre_affaires"] == 12000
+    assert valeurs["resultat_net"] == 700
+    assert valeurs["cout_des_ventes"] == 6800
+    assert valeurs["dettes_fournisseurs"] == 1400
+    assert valeurs["achats_ttc"] == 8330
+    assert valeurs["stocks"] == 1200
+    assert valeurs["creances_clients"] == 1500
+    assert valeurs["stock_initial"] == 1000
+    assert valeurs["stock_final"] == 1200
+    assert valeurs["cours_action"] == 42
+    assert valeurs["benefice_par_action"] == pytest.approx(3.5, abs=0.01)
+    assert valeurs["dividende_par_action"] == pytest.approx(1.2, abs=0.01)
 
-    assert ratios["current_ratio"] == pytest.approx(1.75, abs=0.01)
-    assert ratios["quick_ratio"] == pytest.approx(1.15, abs=0.01)
-    assert ratios["debt_to_equity"] == pytest.approx(1.125, abs=0.01)
-    assert ratios["equity_ratio"] * 100 == pytest.approx(47.06, abs=0.05)
-    assert ratios["net_margin"] * 100 == pytest.approx(5.83, abs=0.05)
-    assert ratios["roe"] * 100 == pytest.approx(17.50, abs=0.05)
-    assert ratios["roa"] * 100 == pytest.approx(8.24, abs=0.05)
-    assert ratios["inventory_turnover"] == pytest.approx(6.18, abs=0.02)
-    assert ratios["receivables_days"] == pytest.approx(45.6, abs=0.2)
-    assert ratios["supplier_days"] == pytest.approx(61.3, abs=0.2)
+    assert ratios["liquidite_generale"] == pytest.approx(1.75, abs=0.01)
+    assert ratios["liquidite_reduite"] == pytest.approx(1.15, abs=0.01)
+    assert ratios["endettement"] == pytest.approx(1.125, abs=0.01)
+    assert ratios["autonomie_financiere"] * 100 == pytest.approx(47.06, abs=0.05)
+    assert ratios["marge_nette"] * 100 == pytest.approx(5.83, abs=0.05)
+    assert ratios["rentabilite_capitaux_propres"] * 100 == pytest.approx(17.50, abs=0.05)
+    assert ratios["rentabilite_actifs"] * 100 == pytest.approx(8.24, abs=0.05)
+    assert ratios["rotation_stocks"] == pytest.approx(6.18, abs=0.02)
+    assert ratios["delai_clients"] == pytest.approx(45.6, abs=0.2)
+    assert ratios["delai_fournisseurs"] == pytest.approx(61.3, abs=0.2)
     assert ratios["per"] == pytest.approx(12.0, abs=0.05)
-    assert ratios["dividend_yield"] * 100 == pytest.approx(2.86, abs=0.05)
+    assert ratios["rendement_dividende"] * 100 == pytest.approx(2.86, abs=0.05)
 
 
-def _assert_test2(values, ratios):
+def _assert_test2(valeurs, ratios):
     """Postes et ratios attendus pour test2 (format .txt ou .pdf)."""
     # Les valeurs doivent provenir de la colonne 2025, pas 2024.
-    assert values["current_assets"] == 2400
-    assert values["inventory"] == 900
-    assert values["total_assets"] == 6000
-    assert values["current_liabilities"] == 2800
-    assert values["long_term_debt"] == 1700
-    assert values["equity"] == 1500
-    assert values["revenue"] == 8000
-    assert values["net_income"] == -250  # parenthèses = perte
+    assert valeurs["actifs_courants"] == 2400
+    assert valeurs["stocks"] == 900
+    assert valeurs["total_actif"] == 6000
+    assert valeurs["passifs_courants"] == 2800
+    assert valeurs["dettes_long_terme"] == 1700
+    assert valeurs["capitaux_propres"] == 1500
+    assert valeurs["chiffre_affaires"] == 8000
+    assert valeurs["resultat_net"] == -250  # parenthèses = perte
 
-    assert ratios["current_ratio"] == pytest.approx(0.86, abs=0.01)
-    assert ratios["quick_ratio"] == pytest.approx(0.54, abs=0.01)
-    assert ratios["debt_to_equity"] == pytest.approx(3.00, abs=0.02)
-    assert ratios["equity_ratio"] * 100 == pytest.approx(25.0, abs=0.1)
-    assert ratios["net_margin"] * 100 == pytest.approx(-3.13, abs=0.05)
-    assert ratios["roe"] * 100 == pytest.approx(-16.67, abs=0.1)
-    assert ratios["roa"] * 100 == pytest.approx(-4.17, abs=0.1)
+    assert ratios["liquidite_generale"] == pytest.approx(0.86, abs=0.01)
+    assert ratios["liquidite_reduite"] == pytest.approx(0.54, abs=0.01)
+    assert ratios["endettement"] == pytest.approx(3.00, abs=0.02)
+    assert ratios["autonomie_financiere"] * 100 == pytest.approx(25.0, abs=0.1)
+    assert ratios["marge_nette"] * 100 == pytest.approx(-3.13, abs=0.05)
+    assert ratios["rentabilite_capitaux_propres"] * 100 == pytest.approx(-16.67, abs=0.1)
+    assert ratios["rentabilite_actifs"] * 100 == pytest.approx(-4.17, abs=0.1)
 
 
-def _assert_test3(values, ratios):
+def _assert_test3(valeurs, ratios):
     """Postes et ratios attendus pour test3 (format .txt ou .pdf)."""
     # Les composants élémentaires doivent être lus.
-    assert values["inventory"] == 150000
-    assert values["receivables"] == 120000
-    assert values["cash"] == 80000
-    assert values["share_capital"] == 250000
-    assert values["reserves"] == 90000
-    assert values["net_income"] == 60000
-    assert values["long_term_debt"] == 200000
-    assert values["supplier_payables"] == 110000
-    assert values["tax_social_payables"] == 40000
-    assert values["revenue"] == 900000
-    assert values["non_current_assets"] == 400000
+    assert valeurs["stocks"] == 150000
+    assert valeurs["creances_clients"] == 120000
+    assert valeurs["tresorerie"] == 80000
+    assert valeurs["capital_social"] == 250000
+    assert valeurs["reserves"] == 90000
+    assert valeurs["resultat_net"] == 60000
+    assert valeurs["dettes_long_terme"] == 200000
+    assert valeurs["dettes_fournisseurs"] == 110000
+    assert valeurs["dettes_fiscales_sociales"] == 40000
+    assert valeurs["chiffre_affaires"] == 900000
+    assert valeurs["actifs_non_courants"] == 400000
 
     # Les sous-totaux doivent être reconstitués.
-    assert values["current_assets"] == 350000
-    assert values["current_liabilities"] == 150000
-    assert values["equity"] == 400000
-    assert values["total_assets"] == 750000
+    assert valeurs["actifs_courants"] == 350000
+    assert valeurs["passifs_courants"] == 150000
+    assert valeurs["capitaux_propres"] == 400000
+    assert valeurs["total_actif"] == 750000
 
-    assert ratios["current_ratio"] == pytest.approx(2.33, abs=0.01)
-    assert ratios["quick_ratio"] == pytest.approx(1.33, abs=0.01)
-    assert ratios["debt_to_equity"] == pytest.approx(0.88, abs=0.02)
-    assert ratios["equity_ratio"] * 100 == pytest.approx(53.33, abs=0.05)
-    assert ratios["net_margin"] * 100 == pytest.approx(6.67, abs=0.05)
-    assert ratios["roe"] * 100 == pytest.approx(15.0, abs=0.1)
-    assert ratios["roa"] * 100 == pytest.approx(8.0, abs=0.1)
+    assert ratios["liquidite_generale"] == pytest.approx(2.33, abs=0.01)
+    assert ratios["liquidite_reduite"] == pytest.approx(1.33, abs=0.01)
+    assert ratios["endettement"] == pytest.approx(0.88, abs=0.02)
+    assert ratios["autonomie_financiere"] * 100 == pytest.approx(53.33, abs=0.05)
+    assert ratios["marge_nette"] * 100 == pytest.approx(6.67, abs=0.05)
+    assert ratios["rentabilite_capitaux_propres"] * 100 == pytest.approx(15.0, abs=0.1)
+    assert ratios["rentabilite_actifs"] * 100 == pytest.approx(8.0, abs=0.1)
 
 
 # ---------------------------------------------------------------------------
 # TEST 1 : .txt et .pdf doivent donner les mêmes valeurs et ratios.
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
-    "file_name",
+    "nom_fichier",
     ["test1_complet_ordre_piege.txt", "test1_complet_ordre_piege.pdf"],
 )
-def test_test1_values_and_ratios(file_name):
-    values, ratios = _run(file_name)
-    _assert_test1(values, ratios)
+def test_test1_valeurs_et_ratios(nom_fichier):
+    valeurs, ratios = _executer(nom_fichier)
+    _assert_test1(valeurs, ratios)
 
 
 @pytest.mark.parametrize(
-    "file_name",
+    "nom_fichier",
     ["test2_perte_colonnes_notes.txt", "test2_perte_colonnes_notes.pdf"],
 )
-def test_test2_values_and_ratios(file_name):
-    values, ratios = _run(file_name)
-    _assert_test2(values, ratios)
+def test_test2_valeurs_et_ratios(nom_fichier):
+    valeurs, ratios = _executer(nom_fichier)
+    _assert_test2(valeurs, ratios)
 
 
 @pytest.mark.parametrize(
-    "file_name",
+    "nom_fichier",
     ["test3_sans_totaux.txt", "test3_sans_totaux.pdf"],
 )
-def test_test3_values_and_ratios(file_name):
-    values, ratios = _run(file_name)
-    _assert_test3(values, ratios)
-
-
+def test_test3_valeurs_et_ratios(nom_fichier):
+    valeurs, ratios = _executer(nom_fichier)
+    _assert_test3(valeurs, ratios)

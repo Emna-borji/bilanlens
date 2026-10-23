@@ -1,21 +1,23 @@
 ﻿"""Vérifie qu'un bilan de banque est signalé hors périmètre."""
-from conftest import load
-from _pipeline import run_pipeline
-from bilanlens.sector import detect_out_of_scope_sector
+from conftest import charger
+from _pipeline import executer_pipeline
+from bilanlens.sector import detecter_secteur_hors_perimetre
 
 
-def test_synthetic_bank_bilan_detected_as_bank():
-    _values, _ratios, _checks, extra = run_pipeline(
-        load("synth_bank_hors_perimetre.txt")
+def test_bilan_banque_synthetique_detecte_comme_banque():
+    _valeurs, _ratios, _controles, extra = executer_pipeline(
+        charger("synth_bank_hors_perimetre.txt")
     )
-    scope = detect_out_of_scope_sector(extra["text"])
-    assert scope is not None, "Le bilan de banque n'a pas été détecté."
-    assert scope["sector"] == "banque"
+    perimetre = detecter_secteur_hors_perimetre(extra["texte"])
+    assert perimetre is not None, "Le bilan de banque n'a pas été détecté."
+    assert perimetre["secteur"] == "banque"
     # Au moins 2 indicateurs trouvés.
-    assert len(scope["matches"]) >= 2
+    assert len(perimetre["correspondances"]) >= 2
 
 
-def test_industrial_synthetic_not_flagged():
+def test_bilan_industriel_synthetique_non_signale():
     """Un bilan industriel (SOTUVER synthétique PCG) reste dans le périmètre."""
-    _values, _ratios, _checks, extra = run_pipeline(load("synth_pcg_fr.txt"))
-    assert detect_out_of_scope_sector(extra["text"]) is None
+    _valeurs, _ratios, _controles, extra = executer_pipeline(
+        charger("synth_pcg_fr.txt")
+    )
+    assert detecter_secteur_hors_perimetre(extra["texte"]) is None

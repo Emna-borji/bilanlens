@@ -1,62 +1,62 @@
-﻿"""Pipeline de test commun : charge un fichier → ratios + checks."""
+﻿"""Pipeline de test commun : charge un fichier → ratios + contrôles."""
 from datetime import datetime
 
-from bilanlens.extraction import extract_document
-from bilanlens.mapping import map_candidates
-from bilanlens.analysis import complete_financial_values, calculate_ratios
-from bilanlens.consistency import check_balance_sheet
+from bilanlens.extraction import extraire_document
+from bilanlens.mapping import associer_candidats
+from bilanlens.analysis import completer_valeurs_financieres, calculer_ratios
+from bilanlens.consistency import verifier_bilan
 
 
-def _to_date(period):
+def _vers_date(periode):
     try:
-        return datetime.strptime(period, "%d/%m/%Y").date()
+        return datetime.strptime(periode, "%d/%m/%Y").date()
     except Exception:
         return datetime.min.date()
 
 
-def run_pipeline(uploaded, keep_period="latest"):
-    """Extraction → mapping (rank-aware) → ratios + checks.
+def executer_pipeline(fichier_charge, periode_conservee="derniere"):
+    """Extraction → mapping (sensible au rang) → ratios + contrôles.
 
-    Retourne : (values, ratios, checks, extra)
-      - values : postes complétés
-      - ratios : dict key → float ou None
-      - checks : liste de contrôles de cohérence
-      - extra  : dict informatif (period choisie, used_ocr, candidates…)
+    Retourne : (valeurs, ratios, controles, extra)
+      - valeurs : postes complétés
+      - ratios : dict cle → float ou None
+      - controles : liste de contrôles de cohérence
+      - extra : dict informatif (période choisie, ocr_utilise, candidats…)
     """
-    extracted = extract_document(uploaded)
-    candidates = map_candidates(
-        extracted["text"],
-        records=extracted.get("records") or None,
+    extrait = extraire_document(fichier_charge)
+    candidats = associer_candidats(
+        extrait["texte"],
+        enregistrements=extrait.get("enregistrements") or None,
     )
 
-    periods = {c["period"] for c in candidates if c.get("period")}
-    chosen_period = None
-    if periods:
-        chosen_period = max(periods, key=_to_date)
-        if keep_period == "latest":
-            candidates = [
-                c for c in candidates if c.get("period") == chosen_period
+    periodes = {c["periode"] for c in candidats if c.get("periode")}
+    periode_choisie = None
+    if periodes:
+        periode_choisie = max(periodes, key=_vers_date)
+        if periode_conservee == "derniere":
+            candidats = [
+                c for c in candidats if c.get("periode") == periode_choisie
             ]
 
-    values = {}
-    best_rank = {}
-    for c in candidates:
-        key = c.get("key")
-        if not key:
+    valeurs = {}
+    meilleur_rang = {}
+    for c in candidats:
+        cle = c.get("cle")
+        if not cle:
             continue
-        rank = c.get("rank", 0)
-        if key not in values or rank > best_rank[key]:
-            values[key] = c["value"]
-            best_rank[key] = rank
+        rang = c.get("rang", 0)
+        if cle not in valeurs or rang > meilleur_rang[cle]:
+            valeurs[cle] = c["valeur"]
+            meilleur_rang[cle] = rang
 
-    completed = complete_financial_values(values)
-    ratios = {r["key"]: r["value"] for r in calculate_ratios(completed)}
-    checks = check_balance_sheet(completed)
+    completees = completer_valeurs_financieres(valeurs)
+    ratios = {r["cle"]: r["valeur"] for r in calculer_ratios(completees)}
+    controles = verifier_bilan(completees)
 
     extra = {
-        "period": chosen_period,
-        "used_ocr": extracted.get("used_ocr", False),
-        "candidates": candidates,
-        "text": extracted["text"],
+        "periode": periode_choisie,
+        "ocr_utilise": extrait.get("ocr_utilise", False),
+        "candidats": candidats,
+        "texte": extrait["texte"],
     }
-    return completed, ratios, checks, extra
+    return completees, ratios, controles, extra

@@ -9,13 +9,13 @@ import re
 import unicodedata
 
 
-def _strip_accents(text: str) -> str:
-    normalized = unicodedata.normalize("NFKD", text)
-    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+def _supprimer_accents(texte: str) -> str:
+    normalise = unicodedata.normalize("NFKD", texte)
+    return "".join(ch for ch in normalise if not unicodedata.combining(ch))
 
 
 # Libellés spécifiques aux bilans bancaires (très rares hors banques).
-BANK_INDICATORS = [
+INDICATEURS_BANQUE = [
     "creances sur la clientele",
     "creances sur les etablissements de credit",
     "depots de la clientele",
@@ -46,7 +46,7 @@ BANK_INDICATORS = [
 ]
 
 # Libellés spécifiques aux bilans d'assurance.
-INSURANCE_INDICATORS = [
+INDICATEURS_ASSURANCE = [
     "provisions techniques",
     "primes emises",
     "primes acquises",
@@ -71,49 +71,49 @@ INSURANCE_INDICATORS = [
 ]
 
 
-def _normalize_haystack(text: str) -> str:
-    without_accents = _strip_accents(text).lower()
-    return re.sub(r"\s+", " ", without_accents)
+def _normaliser_chaine_recherche(texte: str) -> str:
+    sans_accents = _supprimer_accents(texte).lower()
+    return re.sub(r"\s+", " ", sans_accents)
 
 
-def detect_out_of_scope_sector(text: str):
+def detecter_secteur_hors_perimetre(texte: str):
     """Retourne un dict décrivant le secteur détecté, ou None si rien.
 
-    Résultat : {'sector': 'banque'|'assurance', 'matches': [str, ...]}
+    Résultat : {'secteur': 'banque'|'assurance', 'correspondances': [str, ...]}
     Seuil : au moins 2 indicateurs distincts du même secteur
     (pour éviter les faux positifs sur un bilan industriel qui cite
     une ligne « reassurance » parmi ses autres produits).
     """
-    if not text:
+    if not texte:
         return None
 
-    haystack = _normalize_haystack(text)
+    chaine_recherche = _normaliser_chaine_recherche(texte)
 
-    bank_matches = [
-        indicator
-        for indicator in BANK_INDICATORS
-        if indicator in haystack
+    correspondances_banque = [
+        indicateur
+        for indicateur in INDICATEURS_BANQUE
+        if indicateur in chaine_recherche
     ]
 
-    insurance_matches = [
-        indicator
-        for indicator in INSURANCE_INDICATORS
-        if indicator in haystack
+    correspondances_assurance = [
+        indicateur
+        for indicateur in INDICATEURS_ASSURANCE
+        if indicateur in chaine_recherche
     ]
 
-    bank_score = len(bank_matches)
-    insurance_score = len(insurance_matches)
+    score_banque = len(correspondances_banque)
+    score_assurance = len(correspondances_assurance)
 
-    if bank_score >= 2 and bank_score >= insurance_score:
-        return {"sector": "banque", "matches": bank_matches}
+    if score_banque >= 2 and score_banque >= score_assurance:
+        return {"secteur": "banque", "correspondances": correspondances_banque}
 
-    if insurance_score >= 2:
-        return {"sector": "assurance", "matches": insurance_matches}
+    if score_assurance >= 2:
+        return {"secteur": "assurance", "correspondances": correspondances_assurance}
 
     return None
 
 
-SECTOR_MESSAGES = {
+MESSAGES_SECTEUR = {
     "banque": (
         "Ce document ressemble à un bilan bancaire. La structure de bilan "
         "d'une banque diffère sensiblement d'une société industrielle ou "

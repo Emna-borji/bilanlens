@@ -1,4 +1,4 @@
-"""Tests unitaires sur parse_amount / detect_decimal_separator.
+"""Tests unitaires sur parser_montant / detecter_separateur_decimal.
 
 Vérifient que la locale décimale est bien gérée aux cas limites :
 - Virgule unique française → décimale (SFBT « 854,965 », test1 « 3,5 »).
@@ -11,117 +11,117 @@ Vérifient que la locale décimale est bien gérée aux cas limites :
 """
 import pytest
 
-from bilanlens.extraction import detect_decimal_separator, parse_amount
+from bilanlens.extraction import detecter_separateur_decimal, parser_montant
 
 
 # ---------------------------------------------------------------------------
-# detect_decimal_separator — reconnaissance de la locale d'un document.
+# detecter_separateur_decimal — reconnaissance de la locale d'un document.
 # ---------------------------------------------------------------------------
-def test_detect_locale_french_default():
-    assert detect_decimal_separator("") == ","
-    assert detect_decimal_separator("Rien de pertinent ici") == ","
+def test_detection_locale_francais_defaut():
+    assert detecter_separateur_decimal("") == ","
+    assert detecter_separateur_decimal("Rien de pertinent ici") == ","
 
 
-def test_detect_locale_french_space_plus_decimal():
-    text = "Total 1 281 772 854,965"
-    assert detect_decimal_separator(text) == ","
+def test_detection_locale_francais_espace_plus_decimale():
+    texte = "Total 1 281 772 854,965"
+    assert detecter_separateur_decimal(texte) == ","
 
 
-def test_detect_locale_english_double_comma():
-    text = "Revenue 12,345,678"
-    assert detect_decimal_separator(text) == "."
+def test_detection_locale_anglais_double_virgule():
+    texte = "Revenue 12,345,678"
+    assert detecter_separateur_decimal(texte) == "."
 
 
-def test_detect_locale_english_comma_plus_dot_decimal():
-    text = "Revenue 1,234.56"
-    assert detect_decimal_separator(text) == "."
+def test_detection_locale_anglais_virgule_plus_point_decimal():
+    texte = "Revenue 1,234.56"
+    assert detecter_separateur_decimal(texte) == "."
 
 
-def test_detect_locale_english_wins_over_french_when_both_present():
+def test_detection_locale_anglais_gagne_quand_les_deux_presents():
     """Un document mixte avec plusieurs virgules milliers est anglais."""
-    text = "Revenue 12,345,678 and a stray 3,5"
-    assert detect_decimal_separator(text) == "."
+    texte = "Revenue 12,345,678 and a stray 3,5"
+    assert detecter_separateur_decimal(texte) == "."
 
 
 # ---------------------------------------------------------------------------
-# parse_amount — cas français (défaut).
+# parser_montant — cas français (défaut).
 # ---------------------------------------------------------------------------
-def test_parse_french_single_comma_three_decimals():
-    assert parse_amount("854,965") == pytest.approx(854.965)
+def test_parse_francais_virgule_unique_trois_decimales():
+    assert parser_montant("854,965") == pytest.approx(854.965)
 
 
-def test_parse_french_sfbt_long_amount_with_decimal():
-    assert parse_amount("1 281 772 854,965") == pytest.approx(
+def test_parse_francais_sfbt_long_montant_avec_decimale():
+    assert parser_montant("1 281 772 854,965") == pytest.approx(
         1_281_772_854.965
     )
 
 
-def test_parse_french_single_comma_one_decimal():
+def test_parse_francais_virgule_unique_une_decimale():
     # test1 : « Bénéfice par action (TND) : 3,5 »
-    assert parse_amount("3,5") == 3.5
+    assert parser_montant("3,5") == 3.5
 
 
-def test_parse_french_single_comma_two_decimals():
-    assert parse_amount("1 250,50") == 1250.5
+def test_parse_francais_virgule_unique_deux_decimales():
+    assert parser_montant("1 250,50") == 1250.5
 
 
-def test_parse_french_space_only_thousands():
-    assert parse_amount("1 250") == 1250
-    assert parse_amount("1 234 567") == 1_234_567
+def test_parse_francais_espace_seulement_milliers():
+    assert parser_montant("1 250") == 1250
+    assert parser_montant("1 234 567") == 1_234_567
 
 
-def test_parse_french_parentheses_are_negative():
-    assert parse_amount("(250)") == -250
-    assert parse_amount("(1 234,56)") == pytest.approx(-1234.56)
+def test_parse_francais_parentheses_sont_negatives():
+    assert parser_montant("(250)") == -250
+    assert parser_montant("(1 234,56)") == pytest.approx(-1234.56)
 
 
 # ---------------------------------------------------------------------------
-# parse_amount — cas anglais (decimal_separator='.').
+# parser_montant — cas anglais (separateur_decimal='.').
 # ---------------------------------------------------------------------------
-def test_parse_english_single_comma_three_digits_is_thousands():
+def test_parse_anglais_virgule_unique_trois_chiffres_milliers():
     # « 1,250 » dans un bilan anglais = mille deux cent cinquante.
-    assert parse_amount("1,250", decimal_separator=".") == 1250
+    assert parser_montant("1,250", separateur_decimal=".") == 1250
 
 
-def test_parse_english_single_comma_three_digits_bigger():
-    assert parse_amount("12,345", decimal_separator=".") == 12345
-    assert parse_amount("123,456", decimal_separator=".") == 123_456
+def test_parse_anglais_virgule_unique_trois_chiffres_plus_grand():
+    assert parser_montant("12,345", separateur_decimal=".") == 12345
+    assert parser_montant("123,456", separateur_decimal=".") == 123_456
 
 
-def test_parse_english_single_comma_two_digits_is_decimal():
+def test_parse_anglais_virgule_unique_deux_chiffres_decimale():
     # « 1,25 » dans un bilan anglais est une décimale « légère ».
-    assert parse_amount("1,25", decimal_separator=".") == pytest.approx(1.25)
+    assert parser_montant("1,25", separateur_decimal=".") == pytest.approx(1.25)
 
 
-def test_parse_english_multiple_commas_are_thousands():
-    assert parse_amount("1,234,567", decimal_separator=".") == 1_234_567
-    assert parse_amount("12,345,678", decimal_separator=".") == 12_345_678
+def test_parse_anglais_plusieurs_virgules_milliers():
+    assert parser_montant("1,234,567", separateur_decimal=".") == 1_234_567
+    assert parser_montant("12,345,678", separateur_decimal=".") == 12_345_678
 
 
-def test_parse_english_comma_thousands_plus_dot_decimal():
-    assert parse_amount("12,345.67", decimal_separator=".") == pytest.approx(
+def test_parse_anglais_virgule_milliers_plus_point_decimal():
+    assert parser_montant("12,345.67", separateur_decimal=".") == pytest.approx(
         12_345.67
     )
 
 
 # ---------------------------------------------------------------------------
-# parse_amount — règle du dernier séparateur (locale-indépendante).
+# parser_montant — règle du dernier séparateur (locale-indépendante).
 # ---------------------------------------------------------------------------
-def test_parse_mixed_last_separator_wins_dot():
+def test_parse_mixte_dernier_separateur_gagne_point():
     # « 1.234,56 » → la virgule finale est décimale.
-    assert parse_amount("1.234,56") == pytest.approx(1234.56)
+    assert parser_montant("1.234,56") == pytest.approx(1234.56)
 
 
-def test_parse_mixed_last_separator_wins_comma():
+def test_parse_mixte_dernier_separateur_gagne_virgule():
     # « 1,234.56 » → le point final est décimal.
-    assert parse_amount("1,234.56") == pytest.approx(1234.56)
+    assert parser_montant("1,234.56") == pytest.approx(1234.56)
 
 
 # ---------------------------------------------------------------------------
-# parse_amount — valeurs invalides.
+# parser_montant — valeurs invalides.
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
-    "value", ["", "nan", "N/A", "-", "—", "–", "n/a", None, "abc", "€"]
+    "valeur", ["", "nan", "N/A", "-", "—", "–", "n/a", None, "abc", "€"]
 )
-def test_parse_invalid_returns_none(value):
-    assert parse_amount(value) is None
+def test_parse_invalide_retourne_none(valeur):
+    assert parser_montant(valeur) is None

@@ -7,8 +7,8 @@ from pathlib import Path
 import pandas as pd
 
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "tests" / "data"
-OUTPUT = DATA_DIR / "synth_excel_multisheet.xlsx"
+REPERTOIRE_DONNEES = Path(__file__).resolve().parent.parent / "tests" / "data"
+SORTIE = REPERTOIRE_DONNEES / "synth_excel_multisheet.xlsx"
 
 
 def main():
@@ -92,7 +92,7 @@ def main():
         ]
     )
 
-    resultat = pd.DataFrame(
+    compte_resultat = pd.DataFrame(
         [
             {
                 "Poste": "Chiffre d'affaires",
@@ -117,12 +117,12 @@ def main():
         ]
     )
 
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    with pd.ExcelWriter(OUTPUT, engine="openpyxl") as writer:
-        bilan.to_excel(writer, sheet_name="Bilan", index=False)
-        resultat.to_excel(writer, sheet_name="Compte de résultat", index=False)
+    SORTIE.parent.mkdir(parents=True, exist_ok=True)
+    with pd.ExcelWriter(SORTIE, engine="openpyxl") as redacteur:
+        bilan.to_excel(redacteur, sheet_name="Bilan", index=False)
+        compte_resultat.to_excel(redacteur, sheet_name="Compte de résultat", index=False)
 
-    print(f"Fichier généré : {OUTPUT}")
+    print(f"Fichier généré : {SORTIE}")
 
 
 if __name__ == "__main__":
