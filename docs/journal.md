@@ -93,5 +93,60 @@ Délice Holding p.6, NCT 5 et 6 cités dans SOTUVER p.8).
 - `README.md` et `CLAUDE.md` documentent désormais la commande
   pytest à utiliser (`.\.venv\Scripts\python.exe -m pytest -v`).
 - `.gitignore` étendu pour exclure le PDF original du planning
-  (`/FinSight Agent*.pdf`) et le dossier personnel `/notes/` : le
+  (`/FinSight Agent*.pdf`) et le fichier personnel `/notes` : le
   dépôt est public.
+
+---
+
+## 2026-10-24 — Benchmark semaine 1 : premières questions SOTUVER
+
+### Ce que j'ai fait
+
+- Expliqué le format **JSONL** et sa structure champ par champ.
+- Fixé 3 décisions mineures : `evidence_page_printed` en chaîne (D1),
+  valeurs intermédiaires + formule pour les Q de calcul (D2),
+  `expected_refusal_reason` catégorisé pour les Q sans réponse (D3).
+- Proposé 5 questions d'exemple sur `real_sotuver_2024.pdf`, une par
+  catégorie (extraction, calcul, comparaison, texte annexes, sans
+  réponse) **sans remplir les réponses**.
+- J'ai annoté les 5 questions moi-même (valeurs, pages, extraits).
+- Vérification indépendante par pdfplumber : zéro désaccord factuel
+  sur les 4 premières questions, zéro occurrence des 5 mots-clés de
+  Q5 dans les 37 pages du PDF (catégorie sans_reponse confirmée).
+- Création de `data/benchmark/questions.jsonl` : 5 lignes JSON
+  valides, IDs uniques, cohérence catégorie / champs vérifiée.
+
+### Ce que j'ai appris
+
+- **JSONL vs CSV** : un `evidence_text` contient virgules, guillemets
+  et retours à la ligne — JSON les échappe proprement, CSV casse.
+  Et une ligne corrompue en JSONL ne fait perdre qu'une question.
+- **Pages imprimées hétérogènes** : romain `"iv"`, préfixé `"A-1"`,
+  manquant → stocker en chaîne (`null` si absent) et pas en entier.
+- **Deux colonnes 2023 chez SOTUVER** : une publiée, une retraitée
+  (note III.3). Pour le résultat net 2023, les deux sont identiques
+  à 38 191 627 TND, mais le choix doit être explicite dans l'énoncé
+  car d'autres postes peuvent différer.
+- **Piège Q4 détecté par moi-même** : les notes annexes (p. 9) disent
+  « au plus bas du coût de production et de la valeur de réalisation
+  nette », tandis que le rapport des commissaires (p. 28-29) parle
+  de « coût moyen pondéré ». Deux sources, deux formulations — un
+  benchmark qui ne précise pas la source est ambigu.
+- **Q5 « sans réponse » bien construite** : recherche exhaustive de
+  5 mots-clés sur 37 pages → zéro occurrence. Un rapport annuel ne
+  publie pas de prix de vente unitaire par bouteille.
+
+### Décisions prises
+
+| Décision | Justification |
+|---|---|
+| JSONL comme format du benchmark | Diff git lisible, 1 Q = 1 ligne, pas de corruption en chaîne |
+| `evidence_page_printed` en chaîne ou `null` | Numéros romains, préfixés ou absents |
+| Pour les Q calcul : stocker valeurs intermédiaires + formule | Évaluer séparément l'extraction et le calcul |
+| Pour les Q sans réponse : `expected_refusal_reason` typé | Catégoriser les refus (donnée non publiée / hors période / hors périmètre) |
+| Reformulation Q3 : préciser la colonne 2023 publiée | Rendre la question reproductible même si une future version du rapport sépare publiée et retraitée |
+| Note Q4 : documenter le piège rapport commissaires vs notes | Préparer une Q piège complémentaire future qui teste la métadonnée de section |
+
+### Livrables
+
+- `data/benchmark/questions.jsonl` : 5 questions SOTUVER 2024.
