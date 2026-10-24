@@ -150,3 +150,99 @@ Délice Holding p.6, NCT 5 et 6 cités dans SOTUVER p.8).
 ### Livrables
 
 - `data/benchmark/questions.jsonl` : 5 questions SOTUVER 2024.
+
+---
+
+## 2026-10-24 (suite) — Benchmark : densification à 30 questions sur 6 PDFs
+
+### Ce que j'ai fait
+
+- Changement de méthode à la demande de l'utilisateur : je propose
+  moi-même les 25 questions restantes avec leurs réponses complètes,
+  l'utilisateur validera ensuite. Répartition imposée : 7 extraction,
+  6 calcul, 5 comparaison, 4 texte annexes, 3 sans réponse ; ~4-5 Q
+  par entreprise ; pièges spécifiques (colonnes 2023 publiée/retraitée,
+  comptes consolidés, notes vs commissaires, unités SFBT décimales).
+- Exploration des 6 PDFs : cartographie des pages (bilan actif/passif,
+  état de résultat, notes règles comptables, commissaires), extraction
+  des valeurs 2023 pour les comparaisons.
+- Rédaction des 25 Q + validation automatique par pdfplumber (chaque
+  extrait présent à la page indiquée, chaque mot-clé des « sans
+  réponse » absent du PDF) + revérification arithmétique des calculs
+  (ratios et différences, signe inclus).
+- Correction en cours de route : Q16 et Q26 refondues (le piège
+  « part de marché » est garanti non publié, contrairement à mes
+  premières idées qui étaient en réalité présentes dans les PDFs —
+  SNMVT International + Libye apparaissent p.14 et p.30 de Monoprix
+  individuel, « clients étrangers » apparaît chez Ciments de Bizerte).
+  Q07 : formule corrigée pour cohérence signe/direction.
+
+### Ce que j'ai appris
+
+- **Vérification au corps-à-corps est non négociable.** Deux de mes
+  trois premières Q « sans réponse » étaient en réalité des Q
+  « extraction » — leurs mots-clés étaient dans le PDF. Sans la
+  recherche globale avant écriture, on aurait eu des faux refus.
+- **Convention des deltas** : pour toute comparaison, formule =
+  `valeur_target - valeur_base` (nouvelle - ancienne). Cela aligne
+  automatiquement le signe de `value_signed` et le `direction`.
+- **Lecture pdfplumber ≠ texte copié**. Les sauts de ligne, l'espace
+  avant/après le signe négatif (`-44790 355`) et les apostrophes
+  typographiques diffèrent du copier-coller humain. Il faut normaliser
+  (accents, casse, parfois espaces) pour comparer.
+- **Monoprix consolidé vs individuel** : exemple d'école de pièges
+  comptables. CA individuel 732,6 M vs consolidé 754,0 M ; résultat
+  net individuel 6 834 166 vs consolidé part du groupe 6 872 913 ;
+  les filiales exclues (SNMVT INTERNATIONAL, UNITED DECS) apparaissent
+  à la fois dans la note des titres de participation individuels et
+  dans les notes de consolidation.
+- **SOTUVER colonnes 2023** : le reclassement rétrospectif des moules
+  (NCT 11) crée la double colonne publiée/retraitée, avec un
+  basculement de 18 577 651 TND de Stocks vers Immobilisations
+  corporelles. C'est le vrai exemple de l'ambiguïté dont parlait R2
+  des questions précédentes.
+- **SFBT décimales** : seule des 6 sociétés à publier en dinars avec
+  3 décimales (ex. 1 281 772 854,965). C'est le piège unités du
+  benchmark.
+
+### Décisions prises
+
+| Décision | Justification |
+|---|---|
+| Formule des comparaisons = `target - base` (nouvelle - ancienne) | Signe cohérent avec `value_signed`, sens cohérent avec `direction` |
+| Q « sans réponse » : parts de marché, nombre de salariés Délice Holding, prix de vente unitaire | Vérifiées absentes dans les PDFs ciblés avec recherche de racines (effectif, salari, concurrent, part de marche…) et mots isolés |
+| Pour les Q de calcul, intermediate_values garde le numérateur en premier et le dénominateur en second | Cohérent avec l'ordre de la formule |
+| Pour la Q Q10 (Monoprix cons), on prend CP part du groupe (comme BilanLens) | Documenté dans la note ; alternative CP+minoritaires signalée |
+
+### Validation finale (après correction utilisateur)
+
+- **31 questions totales** dans `data/benchmark/questions.jsonl`.
+- 31 lignes JSON valides, 31 IDs uniques, catégorie / champs cohérents.
+- Répartition catégories : **9 extraction, 7 calcul, 6 comparaison,
+  5 texte annexes, 4 sans réponse**.
+- Répartition entreprises : SOTUVER 8, Monoprix consolidé 4,
+  Monoprix individuel 4, SFBT 5, Ciments de Bizerte 5, Délice Holding 5.
+- Tous les calculs vérifiés arithmétiquement (ratios et différences).
+- Tous les extraits vérifiés présents à la page indiquée (après
+  normalisation accents/casse).
+- Toutes les Q « sans réponse » : mots-clés absents dans tout le PDF
+  (recherche par racines : effectif, salari, employe, concurrent,
+  marche tunisien, etc.).
+
+### Correction post-validation utilisateur
+
+- **Q30 (Délice Holding) requalifiée** : relecture manuelle utilisateur
+  → la donnée est bien publiée (p.4 : « Dividendes et autres
+  distributions B-8 (32 944 357) » ; p.11 : « Distribution des
+  dividendes (0,600 dinars par action) (32 944 357) »). Q30 devient
+  une Q d'extraction (32 944 357 TND, soit 0,600 DT par action).
+- **Q15 (Monoprix individuel) précisée** : l'énoncé spécifie
+  maintenant la ligne « Résultat net » (5 876 040 en 2023), hors
+  effet des modifications comptables (3 064 889).
+- **Q31 (nouvelle sans-réponse)** : nombre de salariés de Délice
+  Holding — mots-clés `effectif`, `salari`, `employe` tous absents.
+- **Leçon apprise** : pour les Q « sans réponse », chercher des
+  racines (`distribut`, `dividende` isolé) et pas seulement des
+  expressions composées (`dividende distribué`). Mes 2 premières
+  Q « sans réponse » avant correction cherchaient des phrases trop
+  longues qui ne correspondaient pas à la formulation du PDF.
