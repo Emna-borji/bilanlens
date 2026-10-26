@@ -43,12 +43,29 @@ def _normaliser(texte: str) -> str:
     tapée avec un clavier et un texte extrait d'un PDF se comparent sans
     piège invisible.
     """
-    texte = unicodedata.normalize("NFD", texte)
-    texte = "".join(c for c in texte if unicodedata.category(c) != "Mn").lower()
+    texte = unicodedata.normalize("NFD", texte)            #  Cette opération décompose certains caractères accentués en plusieurs caractères Unicode.
+    texte = "".join(c for c in texte if unicodedata.category(c) != "Mn").lower()       #  Mn permet d'identifier les accents combinés afin que le code puisse les supprimer sans supprimer les lettres auxquelles ils étaient associés.
     texte = texte.replace("’", "'").replace("‘", "'")
     texte = " ".join(texte.split())
     return texte
 
+# Une fixture est une fonction que pytest peut préparer automatiquement pour fournir des données aux tests.
+# pytest est un outil Python qui permet de vérifier automatiquement que ton code fonctionne comme prévu.
+# Sans pytest, tu devrais effectuer ces vérifications manuellement. Et les humains oublient des choses, surtout quand ils en ont 47 à vérifier.
+# Cette décoration indique à pytest que questions() est une fixture et que son résultat sera réutilisé pendant le module de tests. Cela évite de relire le benchmark avant chaque test.
+# Une fixture est une fonction qui prépare des données ou des ressources nécessaires aux tests.
+
+
+# scope="function" : la fixture est exécutée de nouveau pour chaque test qui en a besoin. C'est le comportement par défaut.
+
+
+
+# scope="module" : la fixture est exécutée une seule fois par module de tests, puis son résultat est réutilisé par les tests suivants de ce même module.
+
+
+
+# scope="session" : le résultat est réutilisé pendant toute la session de tests.
+# Attention : cela concerne le résultat de la fixture, pas l'exécution des tests. Chaque test s'exécute toujours individuellement.
 
 @pytest.fixture(scope="module")
 def questions():
@@ -70,6 +87,7 @@ def _texte_page(cache, nom_pdf, page_num):
             cache[cle] = _normaliser(pdf.pages[page_num - 1].extract_text() or "")
     return cache[cle]
 
+# le texte est enregistré dans un dictionnaire Python en mémoire vive (RAM)
 
 @pytest.fixture(scope="module")
 def cache_pdfs_entiers():
@@ -217,6 +235,10 @@ def test_benchmark_comparaison_differences_coherentes(questions):
 # ---------------------------------------------------------------------------
 # 3. Extraits présents dans les PDF (marker `real`).
 # ---------------------------------------------------------------------------
+
+
+#  Le marqueur real sert à distinguer les tests qui nécessitent les vrais PDF des tests qui peuvent fonctionner sans les ouvrir.
+
 @pytest.mark.real
 def test_benchmark_evidence_text_present_a_la_page(questions, cache_pages):
     """Chaque evidence_text (hors sans_reponse) doit être présent à la page
