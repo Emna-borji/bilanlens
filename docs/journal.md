@@ -246,3 +246,68 @@ Délice Holding p.6, NCT 5 et 6 cités dans SOTUVER p.8).
   expressions composées (`dividende distribué`). Mes 2 premières
   Q « sans réponse » avant correction cherchaient des phrases trop
   longues qui ne correspondaient pas à la formulation du PDF.
+
+---
+
+## 2026-10-24 (suite 2) — Outil de validation du benchmark en pytest
+
+### Ce que j'ai fait
+
+- Création de `tests/test_benchmark.py` : 11 tests qui vérifient
+  (1) la structure JSONL / catégorie / champs, (2) l'arithmétique
+  des Q calcul et comparaison (signe inclus), (3) la présence de
+  chaque `evidence_text` et de chaque `intermediate_values[*].evidence_text`
+  à la page physique indiquée (marker `real`), (4) l'absence des
+  `expected_absent_keywords` dans tout le PDF pour les Q sans réponse
+  (marker `real`).
+- Enrichissement du JSONL : ajout du champ `expected_absent_keywords`
+  (racines/mots isolés) sur les 4 Q sans réponse.
+- Le test m'a immédiatement remonté 5 vraies incohérences dans mes
+  annotations, que j'ai corrigées :
+
+  | Q | Problème | Correction |
+  |---|---|---|
+  | Q02 | Extrait omettait `(B.9)` et les colonnes 2023 publiée/retraitée | Extrait complet collé du PDF |
+  | Q04 | PDF a des sauts de ligne au milieu des phrases | Normalisation whitespace : `" ".join(s.split())` dans `_normaliser` |
+  | Q08 / Q25 | Apostrophe droite `'` dans annotation vs typographique `'` dans PDF | `_normaliser` remplace U+2019 → U+0027 |
+  | Q23 / Q28 | `evidence_text` top-level mélangeait deux pages, mais `evidence_page_physical` pointe sur une seule | Simplification à la page concernée (l'intermédiaire sur une autre page est déjà vérifié séparément) |
+  | Q05 | « prix de vente » trouvé dans le PDF (contexte générique sur l'évaluation des stocks) | Retiré de `expected_absent_keywords` ; `bouteille` + `prix unitaire` + `prix moyen` suffisent |
+
+### Ce que j'ai appris
+
+- **Un outil de validation révèle ce qu'une relecture humaine seule
+  rate**. Les 5 corrections ci-dessus n'auraient pas été vues
+  manuellement — Q02 avait l'air juste à l'oeil, Q08 et Q25 ont des
+  apostrophes qu'un humain lit sans distinguer, Q23 et Q28 avaient
+  des `evidence_text` plausibles mais incohérents avec la page.
+- **Normalisation whitespace et apostrophes**, c'est **non négociable**
+  quand on compare un texte annoté à la main avec un texte extrait
+  par pdfplumber. Les apostrophes typographiques `'` (U+2019) sont
+  invisibles à l'oeil mais fatales pour un `in`.
+- **Convention `evidence_text` top-level** : doit tenir sur la page
+  physique indiquée. Les valeurs intermédiaires qui pointent sur
+  d'autres pages ont leurs propres `evidence_page_physical` et sont
+  vérifiées séparément.
+- **Racines plutôt que mots entiers** : « prix de vente » comme mot
+  entier est généralement présent (contexte comptable). Pour prouver
+  qu'une Q est sans réponse, préférer des termes discriminants
+  (`prix unitaire`, `prix moyen`, nom du produit) que des mots
+  comptables courants.
+- **Le pipeline du test est utilisable en CI** : il tourne en 35 s
+  sur mon poste et ne demande aucune ressource externe. Les markers
+  `real` sont exécutés en CI (voir `.github/workflows/tests.yml`).
+
+### Décisions prises
+
+| Décision | Justification |
+|---|---|
+| `_normaliser` fait 4 opérations : NFD + suppression Mn + lowercase + apostrophes + whitespace flatten | Robustesse contre tous les pièges invisibles du PDF |
+| Les Q sans réponse portent elles-mêmes leurs mots-racines (`expected_absent_keywords`) | Chaque Q est auto-descriptive ; le test est générique |
+| `evidence_text` top-level ne doit référer qu'à la page `evidence_page_physical` | Simplifie la validation ; les intermédiaires d'autres pages sont dans `intermediate_values` |
+| Marker `real` pour les tests qui ouvrent les PDFs | Convention existante du projet (voir `tests/test_real_bilans.py`) |
+
+### Fichiers modifiés
+
+- `tests/test_benchmark.py` : nouveau, 11 tests.
+- `data/benchmark/questions.jsonl` : enrichi (`expected_absent_keywords`)
+  et corrigé (Q02, Q23, Q28, Q05 notes).
