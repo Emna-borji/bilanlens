@@ -311,3 +311,85 @@ Délice Holding p.6, NCT 5 et 6 cités dans SOTUVER p.8).
 - `tests/test_benchmark.py` : nouveau, 11 tests.
 - `data/benchmark/questions.jsonl` : enrichi (`expected_absent_keywords`)
   et corrigé (Q02, Q23, Q28, Q05 notes).
+
+---
+
+## 2026-10-26 — Protocole d'évaluation + trait d'union conditionnel
+
+### Ce que j'ai fait
+
+- Ajouté le retrait du **trait d'union conditionnel U+00AD** à
+  `_normaliser` (`tests/test_benchmark.py`), avec un test unitaire
+  `test_normaliser_retire_le_trait_dunion_conditionnel`. Les 4 opérations
+  précédentes agissent sur des caractères disjoints, le 5ᵉ aussi ;
+  l'ordre reste commutatif.
+- Vérifié que Q23 (ROA Ciments de Bizerte) et Q28 (ROE Délice Holding)
+  portent bien **leurs deux opérandes** dans `intermediate_values`
+  avec `evidence_page_physical` et `evidence_text` distincts
+  (Q23 : résultat net p. 4 + total actif p. 2 ; Q28 : résultat net p. 3
+  + capitaux propres p. 2). La simplification de l'`evidence_text`
+  top-level n'a rien fait disparaître.
+- **Correction Q23** : la précédente annotation du `total_actif`
+  citait la ligne « Total des capitaux propres et des passifs
+  388 668 436 » de la page 3. Même montant par équilibre comptable,
+  mais c'est la ligne du **passif**, pas de l'actif. La bonne ligne
+  est page 2 : « Total des Actifs 388 668 436 241 664 543 ». Corrigé.
+- Rédigé `data/benchmark/protocole.md` : 9 sections courtes, un
+  tableau par type de mesure, une section « Une preuve = une page »
+  (leçon Q23/Q28), une section « Convention sur les dividendes »
+  (« au titre de l'exercice » vs « payé pendant l'exercice », leçon
+  Q30), une section sur les 3 pièges des Q `sans_reponse`
+  (absence vraie / formulation équivalente / passage trompeur, leçon
+  Q05).
+
+### Pourquoi
+
+Deux manques distincts :
+
+1. **Technique** : U+00AD est invisible à l'écran, échappe à
+   `split()` (il n'est pas de classe whitespace Unicode), et certains
+   PDF l'injectent lors de l'export. Sans son retrait, une annotation
+   `"intermédiaire"` ne matcherait pas un PDF portant
+   `"inter­médiaire"` — bug silencieux.
+2. **Protocole** : le benchmark seul ne dit pas **comment** on
+   l'évalue. Sans tolérances écrites, sans conventions documentées
+   (dividendes au titre de / payés pendant), sans règles sur les
+   sans-réponse, chaque exécution de V1/V2 pourrait se juger
+   différemment.
+
+### Ce que j'ai appris
+
+- **Un benchmark a toujours un protocole frère.** Le benchmark fixe
+  les **questions et réponses attendues** ; le protocole fixe le
+  **cadre d'interprétation** (tolérances, règles de refus,
+  conventions sémantiques). Les deux doivent évoluer ensemble.
+- **« Une preuve = une page »** est une règle structurelle qui rend
+  l'annotation testable. Si une preuve top-level enjambait deux
+  pages, le test ne pourrait pas la vérifier page par page. Les
+  opérandes multi-pages descendent dans `intermediate_values[*]`,
+  chacun sur sa page.
+- **La convention « au titre de » vs « payé pendant »** vient
+  directement du cours de finance d'entreprise : un dividende proposé
+  par le conseil d'administration à l'AGO n'est pas un décaissement.
+  Le premier est dans la note d'affectation du résultat, le second
+  dans le TFT (flux de financement). Confondre les deux fait entrer
+  dans le même ratio deux chiffres qui portent sur deux exercices
+  différents.
+- **Trois pièges des sans-réponse** : (a) donnée absente, (b)
+  publiée sous un autre nom (Q30), (c) passage trompeur
+  (Q05 « prix de vente nets pratiqués »). Le système doit refuser
+  **en citant** le passage trompeur, pas en l'ignorant.
+
+### Décisions prises
+
+| Décision | Justification |
+|---|---|
+| `_normaliser` passe à 5 opérations (ajout U+00AD) | Pièges invisibles futurs couverts par un replace explicite |
+| Protocole dans `data/benchmark/protocole.md` et non `docs/` | Il fait partie du benchmark, pas de la documentation générale |
+| Récupération jugée OK si **toutes** les pages des `intermediate_values` sont dans le top-k | Un calcul n'est bon que si tous ses opérandes ont été retrouvés |
+| Taux d'hallucination cible = 0 pour les `sans_reponse` | Un rapport annuel n'invente pas ; le système ne doit pas non plus |
+
+### Fichiers modifiés
+
+- `tests/test_benchmark.py` : ajout U+00AD + test unitaire.
+- `data/benchmark/protocole.md` : nouveau, 9 sections.

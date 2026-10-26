@@ -42,12 +42,25 @@ def _normaliser(texte: str) -> str:
     rabaissées en apostrophe droite (U+0027 ') pour qu'une annotation
     tapée avec un clavier et un texte extrait d'un PDF se comparent sans
     piège invisible.
+
+    Le trait d'union conditionnel (U+00AD, soft hyphen) est retiré :
+    il est invisible à l'écran et n'est pas de classe whitespace, donc
+    `split()` ne le voit pas. Certains PDF l'injectent lors de l'export.
     """
     texte = unicodedata.normalize("NFD", texte)            #  Cette opération décompose certains caractères accentués en plusieurs caractères Unicode.
     texte = "".join(c for c in texte if unicodedata.category(c) != "Mn").lower()       #  Mn permet d'identifier les accents combinés afin que le code puisse les supprimer sans supprimer les lettres auxquelles ils étaient associés.
     texte = texte.replace("’", "'").replace("‘", "'")
+    texte = texte.replace("\u00ad", "")
     texte = " ".join(texte.split())
     return texte
+
+
+def test_normaliser_retire_le_trait_dunion_conditionnel():
+    """U+00AD est invisible à l'œil mais présent dans certains extraits
+    PDF. Il doit disparaître pour qu'une annotation tapée au clavier et
+    le texte extrait se comparent égal."""
+    assert _normaliser("inter\u00admédiaire") == _normaliser("intermédiaire")
+    assert _normaliser("coûts\u00ad de production") == _normaliser("coûts de production")
 
 # Une fixture est une fonction que pytest peut préparer automatiquement pour fournir des données aux tests.
 # pytest est un outil Python qui permet de vérifier automatiquement que ton code fonctionne comme prévu.
