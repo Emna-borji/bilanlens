@@ -393,3 +393,175 @@ Deux manques distincts :
 
 - `tests/test_benchmark.py` : ajout U+00AD + test unitaire.
 - `data/benchmark/protocole.md` : nouveau, 9 sections.
+
+---
+
+## 2026-10-26 (suite) — Semaine 2, étape 2 EN COURS (pause)
+
+### Où on en est
+
+**Étape 2 du planning (couche d'abstraction LLM) : commencée, en pause
+avant la contribution humaine.**
+
+### Choix validés pour la semaine 2 (A/B/C/D du planning)
+
+| Choix | Décision |
+|---|---|
+| A — LLM | Hybride : API gratuite **Gemini Flash** maintenant, Ollama (Qwen3-1.7B / 4B ou Phi-4-mini, max 4B) plus tard (semaine 7-8). Température 0. Version du modèle enregistrée dans chaque fichier de résultats pour reproductibilité. |
+| B — Chunking | Par **page physique**, avec sous-découpage pour les pages trop longues qui préserve la ligne d'en-tête de colonnes (ex. « 31/12/2024 31/12/2023 »). |
+| C — Embeddings | **bge-m3** (pas MiniLM : son max_seq_length de 128 tokens tronquerait nos chunks de 1500 car.). À l'implémentation, afficher explicitement le max_seq_length du modèle chargé. |
+| D — Index | **Chroma** (métadonnées natives : entreprise, exercice, page_physique). |
+
+Note : les seuils Recall/MRR du protocole §3.1 sont des objectifs, pas
+des critères de passage.
+
+### Avancement micro-étapes de l'étape 2
+
+| Micro-étape | État |
+|---|---|
+| 2a — `requirements.txt` : ajout `google-genai>=0.3` + `python-dotenv>=1.0` | ✅ fait |
+| 2b — `.env.example` versionné (clé `GEMINI_API_KEY=`) ; `.env` déjà gitignoré | ✅ fait |
+| 2c — `pytest.ini` : nouveau marker `network` pour les tests tapant une API externe | ✅ fait |
+| 2d — `bilanlens/llm.py` : `LLMResponse` dataclass + Protocol `LLM` + classe `GeminiLLM` + `ErreurQuotaDepassee` + factory `creer_llm` + `list_models()` | ✅ fait **sauf** le corps de `_appel_avec_backoff` (TODO(human)) |
+| 2e — Humain écrit le backoff (5-7 lignes dans `_appel_avec_backoff`) | ⏸️ **pause ici** |
+| 2f — `tests/test_llm.py` : test de la dataclass + test du Protocol (`isinstance` grâce à `@runtime_checkable`) + test mocké du happy path + test marker `network` (appel réel) | 🕐 à faire après 2e |
+| 2g — Lancer `.\.venv\Scripts\python.exe -m pytest -v` : tout vert | 🕐 à faire après 2f |
+
+### Détails techniques fixés dans `bilanlens/llm.py`
+
+- `GeminiLLM.DEFAULT_MODEL = "gemini-2.5-flash"`. Vérification au
+  runtime via `list_models()` avant chaque run (Google a changé les
+  modèles stables en avril 2026 ; `gemini-3.5-flash` GA depuis
+  mai 2026 et `gemini-3.6-flash` depuis juillet 2026 sont aussi
+  envisageables, à confirmer au moment d'exécuter B0).
+- Classe `GeminiLLM` : import tardif de `google.genai` dans
+  `__init__`, et dans `generate()` import tardif de `types`. Permet
+  aux tests mockés de ne pas exiger la lib installée.
+- `LLMResponse` est `@dataclass(frozen=True)` (immuable) : garantit
+  que le fichier de résultats écrit en JSON ne pourra pas être muté
+  après coup.
+- `LLM` Protocol est `@runtime_checkable` : `isinstance(llm, LLM)`
+  vérifie uniquement la présence de `generate` (duck typing). La
+  garantie statique viendra d'un passage mypy/pyright en CI (à
+  prévoir après la semaine 2).
+- Sécurité clé API : jamais incluse dans `LLMResponse`, jamais loggée,
+  jamais écrite dans `results/*.jsonl`. Rappel pour la revue avant
+  chaque commit.
+
+### Dette technique à adresser
+
+- Logique de reprise d'un run interrompu (si le quota 429 persiste
+  après N tentatives) : à écrire dans `evaluate_b0.py` à l'étape 5
+  (checkpoint sur l'ID de la Q, re-lecture au démarrage du script).
+
+### Reprise
+
+Après la pause, retrouver le `TODO(human)` dans la méthode
+`_appel_avec_backoff` de `bilanlens/llm.py`. L'énoncé Learn by Doing
+est reproduit dans la conversation précédente ; les contraintes :
+
+- jusqu'à `max_tentatives` tentatives (défaut 5) ;
+- sur `errors.ClientError` avec `.code == 429` : `time.sleep(duree)`
+  puis réessayer ;
+- `duree` initiale 2 s, doublée à chaque reprise (2, 4, 8, 16) ;
+- pas d'attente après la dernière tentative ;
+- toute autre erreur se propage immédiatement ;
+- épuisement du quota → lever `ErreurQuotaDepassee`.
+
+Appel bloquant à passer dans la boucle :
+
+```python
+self._client.models.generate_content(
+    model=self._model, contents=prompt, config=config
+)
+```
+
+### Fichiers modifiés dans la session
+
+- `requirements.txt` : + `google-genai>=0.3`, + `python-dotenv>=1.0`.
+- `.env.example` : nouveau, versionné (clé vide).
+- `pytest.ini` : + marker `network`.
+- `bilanlens/llm.py` : nouveau, 1 TODO(human) restant.
+
+---
+
+## 2026-10-27 — Semaine 2, étape 2 TERMINÉE
+
+### Reprise après pause
+
+Le `TODO(human)` du backoff n'a pas été rédigé à la main : contribution
+reprise par l'assistant selon les contraintes du journal.
+
+### Micro-étapes 2e-2g faites
+
+| Micro-étape | Résultat |
+|---|---|
+| 2e — Corps de `_appel_avec_backoff` écrit (backoff exponentiel [2, 4, 8, 16] s, max 5 tentatives, 429 réessayé, autres erreurs propagées, `ErreurQuotaDepassee` sur quota épuisé) | ✅ |
+| 2e-bis — `DEFAULT_MODEL` : `"gemini-2.5-flash"` → `"gemini-3.5-flash"` (stable depuis mai 2026 selon la vérif WebSearch 2026-10-26) | ✅ |
+| 2f — `tests/test_llm.py` : 9 tests (dataclass auto-descriptive, dataclass immuable, Protocol runtime_checkable, happy path mocké, 429 puis succès, 403 remonte immédiatement, quota épuisé lève ErreurQuotaDepassee, factory erreur sur fournisseur inconnu, appel réel marker `network`) | ✅ |
+| 2g — Suite complète pytest : **88 passed** en 1 min 40 s (79 anciens + 9 nouveaux). Test réseau inclus, a réellement tapé Gemini. | ✅ |
+| 2h — Vérification de fuite de clé : **5/5 OK** (clé 53 car. absente des 59 fichiers suivis par Git, du `git diff`, du `git diff --cached`, pas de `results/` encore, `.env` ignoré par `.gitignore` ligne 19) | ✅ |
+
+### Choix d'implémentation du backoff (expliqué)
+
+- **Exponentiel plutôt que linéaire** : avec un free tier à 10 RPM
+  (1 appel/6 s), un backoff démarrant à 2 s a de bonnes chances de
+  passer dès la 2ᵉ ou 3ᵉ tentative. En linéaire à 6 s partout, on
+  attendrait toujours au moins 6 s même si le quota se libère à 2 s.
+- **Pas d'attente après la dernière tentative** : on gagne la durée
+  finale (ici 32 s de wait sauvées) et surtout `ErreurQuotaDepassee`
+  arrive aussitôt que la 5ᵉ tentative échoue, ce qui laisse une marge
+  au script d'évaluation de l'étape 5 pour sauver un checkpoint et
+  arrêter proprement.
+- **Toute erreur ≠ 429 remonte immédiatement** : réessayer sur un 403
+  (clé invalide) ou 400 (prompt mal formé) n'y changerait rien ; mieux
+  vaut planter vite et clairement.
+
+### Patterns de test à retenir
+
+- **Faux `errors.ClientError` via `__new__`** : contourne la variation
+  de signature du constructeur entre versions de google-genai.
+  `ClientError.__new__(ClientError)` + attributs posés à la main
+  (`code`, `message`, `args`, `status`).
+- **`@patch("bilanlens.llm.time.sleep")`** : patch local au module
+  testé, pas global. Permet d'inspecter `call_count` et `call_args_list`
+  pour tester **exactement** la progression des délais.
+- **`isinstance(adapter, LLM)` avec `@runtime_checkable`** : vérifie
+  uniquement la présence des méthodes du Protocol, pas leur signature.
+  Pour une vérification stricte, prévoir mypy ou pyright en CI.
+
+### Décisions prises
+
+| Décision | Justification |
+|---|---|
+| `GeminiLLM.DEFAULT_MODEL = "gemini-3.5-flash"` | Stable (GA mai 2026), aliasé par `gemini-flash-latest` ; alternative plus récente `gemini-3.6-flash` (GA juillet 2026) à envisager plus tard |
+| Backoff démarrant à 2 s, exponentiel, max 5 tentatives | Converge rapidement sur free tier 10 RPM ; durée totale max 30 s |
+| `LLMResponse` dataclass `frozen=True` | Garantit qu'un script ne peut pas muter la réponse avant écriture dans `results/*.jsonl` |
+| Marker `network` plutôt que mock systématique | Permet un test de contrat réel au cas par cas sans impacter la CI gratuite |
+
+### Fichiers modifiés dans la session (final)
+
+- `requirements.txt` : + `google-genai>=0.3`, + `python-dotenv>=1.0`.
+- `.env.example` : nouveau, versionné (clé vide).
+- `pytest.ini` : + marker `network` + `addopts = -m "not network"`
+  (exclusion par défaut : le free tier a un quota de 250 appels/jour,
+  tapper l'API à chaque `pytest` l'épuiserait en 2 jours de debug).
+- `bilanlens/llm.py` : nouveau (~130 lignes, backoff complet).
+- `tests/test_llm.py` : nouveau (9 tests). `load_dotenv()` au niveau
+  module + `@pytest.mark.skipif(not GEMINI_API_KEY)` sur le test réel
+  pour que la CI GitHub reste verte même sans secret configuré.
+
+### Correction après questions de vérification (2026-10-27 soir)
+
+Trois décisions issues des réponses de vérification :
+1. `pytest -m network` ne doit pas être inclus dans la suite par
+   défaut (sinon 100 lancements = 100 appels API). Ajouté
+   `addopts = -m "not network"` dans `pytest.ini` ; `-m network` sur
+   la ligne de commande écrase cette directive, comportement idiomatique.
+2. Le fallback inline `if not GEMINI_API_KEY: load_dotenv()` dans le
+   corps du test est remplacé par un `@pytest.mark.skipif` déclaratif,
+   évalué à la collection. `load_dotenv()` est appelé une seule fois
+   au niveau du module de tests, avant que le décorateur ne lise
+   l'environnement.
+3. Vérification empirique : `pytest -v` → 87 passed, 1 deselected ;
+   `pytest -m network` → 1 passed, 87 deselected.
