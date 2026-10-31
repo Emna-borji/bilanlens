@@ -812,3 +812,66 @@ validation benchmark est garanti présent dans le chunk correspondant.
   `extract_text()` dans `_texte_page` et `_texte_pdf_entier`.
 - `tests/test_chunks_couverture_benchmark.py` : retrait de la
   normalisation tolérante.
+
+---
+
+## 2026-10-31 (soir, 2) — Invariant : une page vide ne produit aucun chunk
+
+### Ce que j'ai fait
+
+Trois changements lies :
+
+1. **`scripts/chunk_corpus.py`** : la boucle de chunking **saute**
+   maintenant les pages dont le texte final reste sous
+   `SEUIL_VIDE_CHARS` apres `extraire_pages` (donc apres OCR cible).
+   Elles sont comptees dans `pages_encore_vides` mais n'alimentent
+   plus `chunks`.
+
+2. **`tests/test_chunks_couverture_benchmark.py`** : nouveau test
+   parametre `test_invariant_chunks_egale_pages_moins_vides_plus_morceaux_supp`,
+   marker `real`, qui pour chacun des 6 documents du corpus verifie :
+
+       n_chunks == n_pages - n_vides + morceaux_supplementaires
+
+   `morceaux_supp = sum(max(0, nb_chunks_de_la_page - 1))`. Un
+   garde-fou complementaire assure qu'aucun chunk n'a un texte sous
+   le seuil.
+
+3. **Regenere `data/chunks/*.jsonl`** avec le nouveau comportement.
+   Avant : Ciments 65 chunks (incorrect). Apres : 63 chunks (= 65
+   pages - 2 vides + 0 decoupage). Total corpus : 249 -> 247 chunks.
+
+### Pourquoi
+
+Un chunk quasi-vide (ex. « 63/ » = 3 car.) n'a rien a vectoriser.
+Son vecteur ressortirait au hasard dans une recherche RAG et
+fausserait les mesures de Recall@k. Mieux vaut l'absence de chunk
+que la presence d'un chunk bruite : le benchmark n'a aucune question
+sur ces pages, aucune evidence a trouver.
+
+### Ce que j'ai appris
+
+- **Les invariants comptables simples (CHUNKS = PAGES - VIDES +
+  MORCEAUX_SUPP) sont des sentinelles tres efficaces**. Ils ne
+  decrivent pas une fonctionnalite, ils decrivent une regle de
+  comportement global. Si demain quelqu'un modifie la logique de
+  chunking et casse l'invariant, le test tombe immediatement, meme
+  si tous les tests unitaires continuent de passer.
+- **Decoupler le "quoi" du "comment"** : le script d'orchestration
+  (`chunk_corpus.py`) decide quoi ignorer (pages vides), la fonction
+  bas niveau `decouper_page` sait decouper n'importe quel texte en
+  chunks. Chacune a sa responsabilite.
+
+### Grep des `extract_text()` restants (sans modification)
+
+Un seul appel actif identifie : `bilanlens/extraction.py:945`
+dans `extraire_document`. Il alimente :
+- la detection de locale (robuste au format) ;
+- le chemin de repli `_extraire_lignes_periodes_depuis_texte` ;
+- le dict de sortie consomme par `app.py` (secteur hors perimetre
+  + extraction de valeurs etiquetees).
+
+Migration eventuelle vers `_pdf_page_text` : benefique pour la
+coherence totale, mais l'appli chapitre 1 en depend (test_real_bilans,
+test_synthetic_bilans). Non modifie en attendant un feu vert explicite
+et un commit dedie.

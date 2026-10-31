@@ -66,11 +66,23 @@ def _compter_pages_vides_natives(pdf_path: Path) -> int:
 def chunker_document(
     pdf_path: Path, doc: str, entreprise: str, exercice: int
 ) -> dict:
-    """Chunke un PDF et retourne un dict de stats + la liste de chunks."""
+    """Chunke un PDF et retourne un dict de stats + la liste de chunks.
+
+    Invariant : une page encore vide apres OCR (< SEUIL_VIDE_CHARS) ne
+    produit AUCUN chunk. Un chunk vide ou quasi-vide n'a rien a
+    vectoriser et son vecteur ressortirait au hasard dans la recherche,
+    faussant le Recall@k.
+
+    Formule garantie : len(chunks) = n_pages - vides + morceaux_supp.
+    """
     pages = extraire_pages(pdf_path)
     chunks: list = []
     pages_decoupees: list[int] = []
+    pages_encore_vides: list[int] = []
     for num, texte in pages:
+        if len(texte.strip()) < SEUIL_VIDE_CHARS:
+            pages_encore_vides.append(num)
+            continue
         morceaux = decouper_page(
             texte,
             doc=doc,
@@ -82,9 +94,6 @@ def chunker_document(
         if len(morceaux) > 1:
             pages_decoupees.append(num)
         chunks.extend(morceaux)
-    pages_encore_vides = [
-        n for n, t in pages if len(t.strip()) < SEUIL_VIDE_CHARS
-    ]
     return {
         "chunks": chunks,
         "n_pages": len(pages),

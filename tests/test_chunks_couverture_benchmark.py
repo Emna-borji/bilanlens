@@ -29,12 +29,14 @@ from pathlib import Path
 
 import pytest
 
+from bilanlens.chunks import SEUIL_VIDE_CHARS, extraire_pages
 from tests.test_benchmark import _normaliser
 
 
 RACINE = Path(__file__).parent.parent
 BENCH_PATH = RACINE / "data" / "benchmark" / "questions.jsonl"
 CHUNKS_DIR = RACINE / "data" / "chunks"
+PDF_DIR = RACINE / "tests" / "data"
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +155,84 @@ def test_couverture_evidence_text_par_les_chunks(
                 )
     rapport = manquants + coupes
     assert not rapport, "\n".join(["Couverture incomplete :"] + rapport)
+
+
+# ---------------------------------------------------------------------------
+# Invariant comptable sur le nombre de chunks par document
+# ---------------------------------------------------------------------------
+@pytest.mark.real
+@pytest.mark.parametrize("pdf_name, doc_key", [
+    ("real_sotuver_2024.pdf",            "sotuver_2024"),
+    ("real_monoprix_2024.pdf",           "monoprix_2024"),
+    ("real_monoprix_consolide_2024.pdf", "monoprix_consolide_2024"),
+    ("real_delice_holding_2024.pdf",     "delice_holding_2024"),
+    ("real_ciments_bizerte_2024.pdf",    "ciments_bizerte_2024"),
+    ("real_sfbt_2024.pdf",               "sfbt_2024"),
+])
+def test_invariant_chunks_egale_pages_moins_vides_plus_morceaux_supp(
+    pdf_name, doc_key
+):
+    """Pour chaque document du corpus, le nombre de chunks dans son
+    JSONL doit respecter l'invariant comptable :
+
+        n_chunks == n_pages - n_vides + morceaux_supplementaires
+
+    ou :
+    - n_pages              = nombre de pages du PDF ;
+    - n_vides              = pages dont le texte final (via
+                             `extraire_pages`, qui gere l'OCR cible)
+                             reste < SEUIL_VIDE_CHARS ;
+    - morceaux_supp.       = somme sur chaque page decoupee de
+                             (nb_sous_morceaux_de_la_page - 1).
+
+    Cet invariant garantit qu'une page vide ne produit AUCUN chunk
+    (sinon on vectoriserait du bruit).
+    """
+    pdf_path = PDF_DIR / pdf_name
+    jsonl_path = CHUNKS_DIR / f"{doc_key}.jsonl"
+    if not pdf_path.exists():
+        pytest.skip(f"PDF absent : {pdf_name}")
+    if not jsonl_path.exists():
+        pytest.skip(
+            f"JSONL absent : {jsonl_path.name} ; relance scripts/chunk_corpus.py"
+        )
+
+    pages = extraire_pages(pdf_path)
+    n_pages = len(pages)
+    n_vides = sum(1 for _, t in pages if len(t.strip()) < SEUIL_VIDE_CHARS)
+
+    # Chunks BRUTS (non normalises) pour mesurer SEUIL_VIDE_CHARS sur
+    # la vraie longueur du texte stocke.
+    chunks_bruts: dict[int, list[str]] = {}
+    with jsonl_path.open(encoding="utf-8") as f:
+        for ligne in f:
+            c = json.loads(ligne)
+            chunks_bruts.setdefault(c["page_physique"], []).append(c["texte"])
+
+    n_chunks = sum(len(v) for v in chunks_bruts.values())
+    # Pour chaque page qui a produit > 1 chunk, elle contribue
+    # (nb_chunks - 1) morceaux "supplementaires" au-dela du socle de
+    # 1 chunk / page.
+    morceaux_supp = sum(max(0, len(v) - 1) for v in chunks_bruts.values())
+
+    attendu = n_pages - n_vides + morceaux_supp
+    assert n_chunks == attendu, (
+        f"{doc_key} : n_chunks={n_chunks} != attendu={attendu} "
+        f"(pages={n_pages}, vides={n_vides}, morceaux_supp={morceaux_supp}). "
+        f"Les pages vides produisent-elles des chunks ?"
+    )
+
+    # Garde-fou complementaire : aucun chunk sous le seuil.
+    sous_seuil = [
+        (page, i, len(t.strip()))
+        for page, textes in chunks_bruts.items()
+        for i, t in enumerate(textes)
+        if len(t.strip()) < SEUIL_VIDE_CHARS
+    ]
+    assert not sous_seuil, (
+        f"{doc_key} : {len(sous_seuil)} chunk(s) sous le seuil "
+        f"({SEUIL_VIDE_CHARS} car.) : {sous_seuil[:5]}"
+    )
 
 
 def test_couverture_intermediate_values_par_les_chunks(
