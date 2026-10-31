@@ -942,7 +942,12 @@ def extraire_document(fichier_charge):
                 textes_pages = []
 
                 for numero_page, page in enumerate(pdf.pages, start=1):
-                    texte_page = page.extract_text() or ""
+                    # Reconstruction par position des mots (meme reference
+                    # que les chunks et le benchmark). `extract_text()`
+                    # colle parfois des colonnes voisines ou perd l'espace
+                    # de milliers (ex. « -44 790 355 » devient
+                    # « -44790 355 »). `_pdf_page_text()` est stable.
+                    texte_page = _pdf_page_text(page)
                     textes_pages.append(
                         f"\n--- Page {numero_page} ---\n{texte_page}"
                     )

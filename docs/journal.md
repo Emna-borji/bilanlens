@@ -875,3 +875,64 @@ Migration eventuelle vers `_pdf_page_text` : benefique pour la
 coherence totale, mais l'appli chapitre 1 en depend (test_real_bilans,
 test_synthetic_bilans). Non modifie en attendant un feu vert explicite
 et un commit dedie.
+
+---
+
+## 2026-10-31 (nuit) — Migration `extract_text()` → `_pdf_page_text` dans `extraire_document`
+
+### Ce que j'ai fait
+
+Dans `bilanlens/extraction.py:945` (chemin PDF de `extraire_document`),
+remplacement du dernier appel `page.extract_text()` par
+`_pdf_page_text(page)`. Après cette migration, le projet n'utilise
+plus `extract_text()` nulle part comme source de vérité : benchmark,
+chunks et appli consomment tous le même texte reconstruit par
+position des mots.
+
+### Protocole de validation (recommandé par le user)
+
+Snapshot des 12 ratios sur 9 fichiers (`test1-3` + 6 bilans réels
+BVMT) avant et après migration, puis `diff` strict :
+
+```
+diff ratios_avant.txt ratios_apres.txt
+---IDENTIQUES---
+```
+
+**Aucune différence** sur aucun ratio pour aucun fichier. Les 122
+tests de la suite complète restent verts.
+
+### Pourquoi c'est safe
+
+Le texte extrait sert à :
+1. **Détection de locale** (`detecter_separateur_decimal`) : regarde
+   des motifs de nombres (groupes de 3 chiffres, décimales), robuste
+   au formatage des espaces.
+2. **Chemin de repli** (`_extraire_lignes_periodes_depuis_texte`) :
+   utilise `\s{2,}` comme séparateur de colonnes.
+   `_pdf_page_text` insère justement des doubles espaces entre
+   colonnes voisines : le repli en profite plutôt que d'en souffrir.
+3. **Détection sectorielle** (`sector.py`) : casefold + split sur
+   mots-racines, aucune dépendance au formatage spatial.
+4. **Repli étiquette/valeur** (`extraire_valeurs_etiquetees`) :
+   motifs regex sur libellé + montant, insensibles au nombre d'espaces.
+
+De plus, le chemin principal reste `_extraire_lignes_periodes_depuis_page_pdf`
+(parseur par coordonnées) : il n'a jamais utilisé `extract_text()`,
+donc rien ne change pour lui.
+
+### Ce que j'ai appris
+
+- **Un diff identique sur un snapshot numérique vaut mille mots** :
+  avant la migration, on pouvait seulement arguer qu'elle était
+  safe. Après, un `diff --IDENTIQUES` prouve l'équivalence
+  comportementale sur l'ensemble du corpus de test. Le snapshot
+  prend 2 minutes à écrire et sécurise la décision.
+- **Une référence unique partout évite une catégorie entière de
+  bugs** : plus personne ne pourra annoter un `evidence_text` sur
+  une représentation et l'évaluer sur une autre.
+
+### Fichiers modifiés
+
+- `bilanlens/extraction.py` : 1 ligne modifiée + 5 lignes de
+  commentaire explicatif.
