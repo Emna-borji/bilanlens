@@ -78,6 +78,84 @@ _MOTIF_TOKEN_NOMBRE = re.compile(
 )
 
 
+def _grouper_mots_par_ligne(page, tolerance_y: int = 3) -> list[list[dict]]:
+    """Regroupe les mots d'une page par ligne visuelle (tolérance verticale),
+    trie chaque ligne par `x0`. Retourne `[[mots_ligne_0], [mots_ligne_1], ...]`.
+
+    Helper partagé par `_pdf_page_text` (reconstruction du texte) et
+    `_extraire_lignes_periodes_depuis_page_pdf` (extraction par coordonnées
+    des montants périodiques). Une seule logique de bucketing.
+
+    `tolerance_y` : 2-3 px pour un PDF natif ; 15-30 px pour une page OCR
+    à 300 dpi (textbaselines décalés).
+    """
+    try:
+        mots = page.extract_words(
+            x_tolerance=2,
+            y_tolerance=tolerance_y,
+            keep_blank_chars=False,
+        )
+    except TypeError:
+        # Shims de test ou pages OCR qui ignorent les kwargs.
+        mots = page.extract_words()
+
+    if not mots:
+        return []
+
+    # Fenêtre glissante sur les 3 dernières lignes vues, pour tolérer un
+    # léger ordonnancement non monotone des mots en sortie de pdfplumber.
+    lignes: list[dict] = []
+    for mot in sorted(mots, key=lambda w: (w["top"], w["x0"])):
+        cible = None
+        for ligne in reversed(lignes[-3:]):
+            if abs(ligne["top"] - mot["top"]) <= tolerance_y:
+                cible = ligne
+                break
+        if cible is None:
+            lignes.append({"top": mot["top"], "mots": [mot]})
+        else:
+            cible["mots"].append(mot)
+    lignes.sort(key=lambda l: l["top"])
+    return [sorted(l["mots"], key=lambda w: w["x0"]) for l in lignes]
+
+
+def _pdf_page_text(
+    page, tolerance_y: int = 3, facteur_colonne: float = 1.0
+) -> str:
+    """Reconstruit le texte d'une page pdfplumber à partir de la POSITION
+    des mots, en préservant la séparation des colonnes.
+
+    `page.extract_text()` colle parfois des colonnes voisines si leurs
+    glyphes sont proches en x : une ligne « Immobilisations 85 230 110
+    82 450 220 » peut devenir « Immobilisations 85230110 82450220 ». Ici,
+    on insère un espace simple pour un petit écart (= espace de milliers
+    « 3 500 ») et un double espace pour un grand écart (= nouvelle colonne).
+
+    Seuil adaptatif : nouvelle colonne si l'écart dépasse
+    `facteur_colonne * hauteur_mot` (hauteur = `bottom - top`, ≈ taille de
+    police). Un seuil fixe en pixels tombait à faux dès qu'on changeait de
+    taille de police ; la hauteur du glyphe est quasi-proportionnelle à la
+    taille, donc le seuil suit automatiquement.
+    """
+    lignes_mots = _grouper_mots_par_ligne(page, tolerance_y=tolerance_y)
+    if not lignes_mots:
+        return ""
+
+    textes: list[str] = []
+    for mots_tries in lignes_mots:
+        parties: list[str] = [mots_tries[0]["text"]]
+        for prec, mot in zip(mots_tries, mots_tries[1:]):
+            ecart = mot["x0"] - prec["x1"]
+            # Hauteur du mot courant si disponible, sinon valeur par défaut
+            # raisonnable (shims de test / mots OCR anciens sans `bottom`).
+            hauteur = max(1.0, mot.get("bottom", mot["top"] + 10) - mot["top"])
+            seuil = facteur_colonne * hauteur
+            parties.append("  " if ecart > seuil else " ")
+            parties.append(mot["text"])
+        textes.append("".join(parties))
+    return "\n".join(textes)
+
+
 def _corriger_token_nombre_ocr(token: str) -> str:
     """Corrige O/l/I/S/B dans un token qui ressemble à un nombre OCR.
 
@@ -111,84 +189,141 @@ def nettoyer_texte_ocr(texte: str) -> str:
     return nettoye
 
 
-def _ocr_pdf_octets(octets_bruts: bytes, langues: str = "fra+eng"):
-    """OCR complet d'un PDF via PyMuPDF + Tesseract.
+def _ocr_pages(
+    pdf_source,
+    indices_cibles: list[int] | None = None,
+    langues: str = "fra+eng",
+    avec_mots: bool = False,
+):
+    """OCR via PyMuPDF + Tesseract, limité aux pages demandées.
 
-    Retourne (texte_concaténé, pages_de_mots). `pages_de_mots` est une
-    liste par page de dicts {texte, x0, x1, haut} compatibles avec
-    `_extraire_lignes_periodes_depuis_page_pdf` : ça permet de retrouver les
-    colonnes grâce aux coordonnées même quand les montants OCR sont
-    collés par un simple espace dans le texte brut.
+    `pdf_source` : `Path | str | bytes` (octets bruts d'un PDF en mémoire).
+    `indices_cibles` : numéros de pages 1-based à OCR. `None` = toutes les
+    pages (lent). Vide = retourne `{}` directement.
+    `avec_mots` : si `True`, retourne `{page_num: (texte, mots)}` avec les
+    coordonnées (`text/x0/x1/top/bottom`) de chaque mot ; si `False`
+    (défaut, usage chunking), retourne `{page_num: texte}`.
 
-    Retourne ("", []) si Tesseract n'est pas disponible ou si l'OCR échoue.
+    Retourne `{}` quand Tesseract/PyMuPDF/Pillow sont absents ou si l'OCR
+    échoue. Boucle unique partagée avec `_ocr_pdf_octets`.
     """
-    vide = ("", [])
     if not ocr_disponible():
-        return vide
+        return {}
+    if indices_cibles is not None and not indices_cibles:
+        return {}
 
     try:
         import pymupdf  # type: ignore
     except ImportError:
         try:
+            # `fitz` est l'ancien nom du module importé après `pip install pymupdf`.
+            # Les versions récentes exposent les deux noms ; les anciennes
+            # (< 1.24) n'exposaient que `fitz`.
             import fitz as pymupdf  # type: ignore
         except ImportError:
-            return vide
+            return {}
 
     try:
         import pytesseract
         from pytesseract import Output
         from PIL import Image
     except ImportError:
-        return vide
+        return {}
 
     _configurer_pytesseract(pytesseract)
 
-    textes_pages = []
-    mots_pages = []
+    cibles = set(indices_cibles) if indices_cibles is not None else None
+    resultats: dict = {}
+
+    if isinstance(pdf_source, (bytes, bytearray)):
+        doc_ctx = pymupdf.open(stream=bytes(pdf_source), filetype="pdf")
+    else:
+        doc_ctx = pymupdf.open(pdf_source)
+
     try:
-        with pymupdf.open(stream=octets_bruts, filetype="pdf") as doc:
-            for page in doc:
-                # 300 dpi pour un bon compromis vitesse / fiabilité OCR.
-                matrice = pymupdf.Matrix(300 / 72, 300 / 72)
+        with doc_ctx as doc:
+            matrice = pymupdf.Matrix(300 / 72, 300 / 72)
+            for i, page in enumerate(doc, start=1):
+                if cibles is not None and i not in cibles:
+                    continue
                 pix = page.get_pixmap(matrix=matrice, alpha=False)
                 img = Image.frombytes(
                     "RGB", (pix.width, pix.height), pix.samples
                 )
                 try:
-                    texte_page = pytesseract.image_to_string(
-                        img, lang=langues
-                    )
-                    donnees = pytesseract.image_to_data(
-                        img, lang=langues, output_type=Output.DICT
+                    texte = pytesseract.image_to_string(img, lang=langues)
+                    donnees = (
+                        pytesseract.image_to_data(
+                            img, lang=langues, output_type=Output.DICT
+                        )
+                        if avec_mots
+                        else None
                     )
                 except pytesseract.TesseractError:
-                    texte_page = pytesseract.image_to_string(img, lang="eng")
-                    donnees = pytesseract.image_to_data(
-                        img, lang="eng", output_type=Output.DICT
+                    # Pack `fra` absent sur certains CI : repli sur `eng`.
+                    texte = pytesseract.image_to_string(img, lang="eng")
+                    donnees = (
+                        pytesseract.image_to_data(
+                            img, lang="eng", output_type=Output.DICT
+                        )
+                        if avec_mots
+                        else None
                     )
-                textes_pages.append(texte_page)
-                # Format pdfplumber (text/top/x0/x1) : clés dictées par la
-                # bibliothèque externe, réutilisées telles quelles côté OCR.
+                if not avec_mots:
+                    resultats[i] = texte
+                    continue
+                # Mots au format pdfplumber (text/x0/x1/top/bottom), pour
+                # pouvoir être consommés par `_pdf_page_text` et
+                # `_extraire_lignes_periodes_depuis_page_pdf`.
                 mots = []
-                for texte, gauche, largeur, haut in zip(
+                for texte_mot, gauche, largeur, haut, hauteur_mot in zip(
                     donnees["text"],
                     donnees["left"],
                     donnees["width"],
                     donnees["top"],
+                    donnees["height"],
                 ):
-                    propre = (texte or "").strip()
+                    propre = (texte_mot or "").strip()
                     if not propre:
                         continue
+                    gauche_f = float(gauche)
+                    haut_f = float(haut)
                     mots.append({
                         "text": propre,
-                        "x0": float(gauche),
-                        "x1": float(gauche) + float(largeur),
-                        "top": float(haut),
+                        "x0": gauche_f,
+                        "x1": gauche_f + float(largeur),
+                        "top": haut_f,
+                        "bottom": haut_f + float(hauteur_mot),
                     })
-                mots_pages.append(mots)
+                resultats[i] = (texte, mots)
     except Exception:
-        return vide
+        return {}
 
+    return resultats
+
+
+def _ocr_pdf_octets(octets_bruts: bytes, langues: str = "fra+eng"):
+    """OCR complet d'un PDF via `_ocr_pages`.
+
+    Wrapper qui concatène les textes de toutes les pages et retourne
+    aussi les mots coordonnés par page, pour la stratégie d'extraction
+    par coordonnées (`_extraire_lignes_periodes_depuis_page_pdf`).
+
+    Retourne `("", [])` si Tesseract n'est pas disponible ou si l'OCR
+    échoue.
+    """
+    pages = _ocr_pages(
+        octets_bruts, indices_cibles=None, langues=langues, avec_mots=True
+    )
+    if not pages:
+        return ("", [])
+
+    textes_pages = []
+    mots_pages = []
+    for i in sorted(pages.keys()):
+        texte, mots = pages[i]
+        textes_pages.append(texte)
+        mots_pages.append(mots)
     return ("\n".join(textes_pages), mots_pages)
 
 
@@ -554,36 +689,13 @@ def _extraire_lignes_periodes_depuis_page_pdf(
     même ligne. Les PDF natifs ont des glyphes alignés précisément (2-3
     pixels) ; une page OCR scannée à 300 dpi a besoin de bien plus
     (textbaselines légèrement décalés, 15-30 pixels).
+
+    Partage le helper `_grouper_mots_par_ligne` avec `_pdf_page_text` :
+    une seule logique de bucketing, deux usages distincts en aval.
     """
-    try:
-        mots = page.extract_words(
-            x_tolerance=2,
-            y_tolerance=tolerance_y,
-            keep_blank_chars=False,
-        )
-    except TypeError:
-        # Les shims de test (ex. _PageOCR) ignorent les kwargs.
-        mots = page.extract_words()
-
-    if not mots:
+    lignes_mots = _grouper_mots_par_ligne(page, tolerance_y=tolerance_y)
+    if not lignes_mots:
         return []
-
-    # Regrouper les mots par ligne visuelle.
-    lignes = []
-    for mot in sorted(mots, key=lambda w: (w["top"], w["x0"])):
-        cible = None
-
-        for ligne in reversed(lignes[-3:]):
-            if abs(ligne["top"] - mot["top"]) <= tolerance_y:
-                cible = ligne
-                break
-
-        if cible is None:
-            lignes.append({"top": mot["top"], "mots": [mot]})
-        else:
-            cible["mots"].append(mot)
-
-    lignes.sort(key=lambda ligne: ligne["top"])
 
     enregistrements = []
     periodes = []
@@ -594,8 +706,7 @@ def _extraire_lignes_periodes_depuis_page_pdf(
         r"^\(?[-+]?\d[\d.,]*\)?%?$"
     )
 
-    for ligne in lignes:
-        mots_ligne = sorted(ligne["mots"], key=lambda w: w["x0"])
+    for mots_ligne in lignes_mots:
 
         # Détecter les dates et leur position horizontale.
         mots_dates = [

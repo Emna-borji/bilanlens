@@ -128,7 +128,7 @@ dans le README et dans tout partage du projet.
 > choisit entre chercher des passages et appeler l'outil de calcul.
 
 **HORS LIGNE — ingestion des rapports** : Rapports PDF → Parsing texte +
-tableaux → Découpage + métadonnées → Index hybride Qdrant + BM25.
+tableaux → Découpage + métadonnées → Index hybride Chroma + BM25.
 
 **EN LIGNE — question vers réponse** : Question → Agent routeur
 (LangGraph) → Recherche hybride + filtres → Reranker → Réponse citée
@@ -139,7 +139,7 @@ Python (ratios) et combiner ses résultats dans la réponse.
 |---|---|
 | Parsing PDF et tableaux | Docling |
 | Embeddings | bge-m3 (local) |
-| Base vectorielle + BM25 | Qdrant (recherche hybride) |
+| Base vectorielle + BM25 | Chroma (recherche hybride) |
 | Reranker | bge-reranker (local) |
 | LLM | Ollama (Qwen ou Llama) |
 | Agent | LangGraph, en version simple à partir de V5 |

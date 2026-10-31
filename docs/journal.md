@@ -409,7 +409,7 @@ avant la contribution humaine.**
 |---|---|
 | A — LLM | Hybride : API gratuite **Gemini Flash** maintenant, Ollama (Qwen3-1.7B / 4B ou Phi-4-mini, max 4B) plus tard (semaine 7-8). Température 0. Version du modèle enregistrée dans chaque fichier de résultats pour reproductibilité. |
 | B — Chunking | Par **page physique**, avec sous-découpage pour les pages trop longues qui préserve la ligne d'en-tête de colonnes (ex. « 31/12/2024 31/12/2023 »). |
-| C — Embeddings | **bge-m3** (pas MiniLM : son max_seq_length de 128 tokens tronquerait nos chunks de 1500 car.). À l'implémentation, afficher explicitement le max_seq_length du modèle chargé. |
+| C — Embeddings | **bge-m3** (pas MiniLM : son max_seq_length de 128 tokens tronquerait nos chunks, dont le seuil est paramétrable, 4000 car. par défaut pour V1 ≈ 1200 tokens, à comparer plus tard avec 1500 car. sur le benchmark). À l'implémentation, afficher explicitement le max_seq_length du modèle chargé. |
 | D — Index | **Chroma** (métadonnées natives : entreprise, exercice, page_physique). |
 
 Note : les seuils Recall/MRR du protocole §3.1 sont des objectifs, pas
@@ -565,3 +565,90 @@ Trois décisions issues des réponses de vérification :
    l'environnement.
 3. Vérification empirique : `pytest -v` → 87 passed, 1 deselected ;
    `pytest -m network` → 1 passed, 87 deselected.
+
+---
+
+## 2026-10-31 — Semaine 2, étape 3 : chunking par page physique
+
+### Ce que j'ai fait
+
+Nouveau module `bilanlens/chunks.py` : dataclass `Chunk` (frozen,
+to_dict/from_dict JSONL), `extraire_pages(pdf_path, seuil_vide_chars=30)`,
+`detecter_entete(lignes)` et `decouper_page(..., seuil_chars=4000)`.
+Trois refactorings pour supprimer la duplication avec `extraction.py` :
+
+- Un helper partagé `_grouper_mots_par_ligne(page, tolerance_y)` dans
+  `extraction.py`, consommé par `_pdf_page_text` (reconstruction du
+  texte) et `_extraire_lignes_periodes_depuis_page_pdf` (extraction par
+  coordonnées) : une seule logique de bucketing visuel.
+- `_ocr_pages(pdf_source, indices_cibles, avec_mots)` déplacé dans
+  `extraction.py`, `_ocr_pdf_octets` devient un wrapper trivial qui
+  concatène. Une seule boucle PyMuPDF + Tesseract.
+- Seuil de colonne de `_pdf_page_text` rendu relatif à la hauteur du
+  mot (`facteur_colonne=1.0`) : plus de constante magique à 5 px, le
+  seuil suit automatiquement la taille de police.
+
+Côté tests, 28 nouveaux tests dans `tests/test_chunks.py` :
+dataclass (5), extraction (4 dont « colonnes non collées sur SOTUVER »),
+`_pdf_page_text` (1 : seuil relatif, `3 500` reste intact et colonnes
+voisines séparées), détection d'en-tête (8 dont fenêtre bornée aux 10
+premières lignes), découpage (9 dont pas de chevauchement et ligne
+très longue émise telle quelle).
+
+### Pourquoi
+
+Un chunk par page physique garde l'ancrage « doc, page » du benchmark
+(`evidence_page_physical` dans `questions.jsonl`). L'OCR ne tourne que
+sur les pages sous seuil (30 car. par défaut) : économise ~90 % du
+temps sur un PDF majoritairement natif.
+
+Un en-tête de colonnes répété en haut de chaque sous-morceau conserve
+le sens des chiffres : sans « Rubriques Notes 31/12/2024 31/12/2023 »,
+un vecteur embedding d'un sous-morceau N≥2 verrait « 100 836 224
+165 986 659 » sans savoir que c'est l'exercice courant vs précédent.
+
+### Ce que j'ai appris
+
+- **`dataclass(frozen=True)` + `asdict()`** : garantit qu'un `Chunk`
+  écrit dans `data/chunks/*.jsonl` ne peut pas être muté entre
+  sérialisation et relecture. L'invariant est exploité par les tests.
+- **Reconstruction de texte depuis les mots** : `page.extract_text()`
+  colle parfois des colonnes proches ; passer par
+  `page.extract_words()` + regroupage par position (`top` ± tolérance,
+  tri par `x0`) donne un contrôle fin sur les séparateurs.
+- **Seuil adaptatif** : comparer un écart (en pixels) à une mesure du
+  contenu (hauteur du glyphe) plutôt qu'à une constante produit un
+  détecteur de colonnes qui tient sur toute la plage de tailles de
+  police. Un seuil fixe à 5 px cassait dès qu'on changeait de corps.
+- **Fenêtre d'en-tête bornée** : chercher le motif « 2 dates OU 2
+  années » sur toute la page attrape des phrases du corps comme
+  « Au cours de 2024, par rapport à 2023 ». Limiter aux 10 premières
+  lignes non vides est un garde-fou simple et efficace.
+
+### Décisions prises
+
+| Décision | Justification |
+|---|---|
+| `sous_numero = 0` pour une page intacte, 1-N pour les sous-morceaux | Distingue sans ambiguïté « page tenant dans un chunk » et « page découpée » ; les tests du benchmark peuvent assertir sur l'un ou l'autre |
+| `page_imprimee: str \| None` | Chiffres romains possibles (`"II"`, `"IV"`), suffixes (`"A-3"`), ou absence (page de garde) ; `str` garde la souplesse |
+| `exercice: int` | Les filtres Chroma (`exercice >= 2020`) perdent silencieusement si on sérialise en str |
+| Préambule = titre + en-tête de colonnes, dédup si identiques | Permet de garder « BILAN » quand l'en-tête est différent, sans doublon quand l'en-tête commence par le titre |
+| Seuil 4000 car. configurable | ~1 page A4 dense de bilan tunisien ; au-delà on gagne à sous-découper |
+| Qdrant → Chroma dans `planning.md` | Choix D validé : installation Python pure, pas de serveur à faire tourner |
+
+### Fichiers modifiés dans la session
+
+- `bilanlens/extraction.py` : + `_grouper_mots_par_ligne`,
+  `_pdf_page_text` (seuil relatif), `_ocr_pages` (déplacé depuis
+  chunks.py avec `avec_mots: bool`), `_ocr_pdf_octets` simplifié,
+  `_extraire_lignes_periodes_depuis_page_pdf` refactorisé pour
+  utiliser le helper.
+- `bilanlens/chunks.py` : nouveau. `Chunk`, `extraire_pages`,
+  `detecter_entete`, `decouper_page`.
+- `tests/test_chunks.py` : nouveau, 28 tests.
+- `docs/planning.md` : Qdrant → Chroma.
+
+### Résultat
+
+Suite complète : **114 passed, 1 deselected en 1 min 25 s**
+(marker `network` déselectionné par défaut via `pytest.ini`).
