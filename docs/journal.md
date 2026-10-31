@@ -652,3 +652,91 @@ un vecteur embedding d'un sous-morceau N≥2 verrait « 100 836 224
 
 Suite complète : **114 passed, 1 deselected en 1 min 25 s**
 (marker `network` déselectionné par défaut via `pytest.ini`).
+
+---
+
+## 2026-10-31 (soir) — Étape 5 : script chunk_corpus.py + colonne OCR_TENT. + test de couverture
+
+### Ce que j'ai fait
+
+- `scripts/chunk_corpus.py` : parcourt les 6 PDFs annotes dans
+  `tests/data/real_*.pdf`, chunk-ise chacun via `extraire_pages` +
+  `decouper_page`, et ecrit un `data/chunks/<doc>.jsonl` par document.
+  Mapping explicite fichier -> (doc, entreprise, exercice).
+- Tableau de stats a la fin : PAGES, CHUNKS, DECOUP., OCR_TENT.,
+  OCR_OK, VIDES. **OCR_TENT. != OCR_OK** : une page candidate (natif
+  < 30 car.) peut etre tentee mais ne rien renvoyer (page de
+  separation sans contenu). Si Tesseract est absent, OCR_TENT. tombe
+  a 0 partout meme si des pages sont candidates : la desactivation
+  silencieuse de l'OCR saute aux yeux.
+- `tests/test_chunks_couverture_benchmark.py` : 2 tests qui chargent
+  `data/chunks/*.jsonl` et verifient que chaque segment >= 10 car.
+  d'`evidence_text` (segments separes par « ... ») + chaque
+  `intermediate_values[*].evidence_text` est present dans un chunk
+  de la bonne `page_physique`. Signale distinctement « absent » vs
+  « coupe entre deux sous-morceaux », sans toucher au benchmark.
+
+### Resultats sur le corpus actuel
+
+```
+Tesseract disponible : True
+
+DOC                        PAGES CHUNKS DECOUP. OCR_TENT. OCR_OK VIDES
+----------------------------------------------------------------------
+sotuver_2024                  37     38       1         0      0     0
+monoprix_2024                 44     44       0         0      0     0
+monoprix_consolide_2024       30     30       0         0      0     0
+delice_holding_2024           25     27       2         0      0     0
+ciments_bizerte_2024          65     65       0         2      0     2
+sfbt_2024                     44     45       1         0      0     0
+----------------------------------------------------------------------
+TOTAL                        245    249       4         2      0     2
+
+Pages encore vides apres OCR (a inspecter) :
+  ciments_bizerte_2024 : [16, 65]
+```
+
+**245 pages -> 249 chunks** (quasi 1 chunk/page). Seules **4 pages**
+sur 245 ont depasse le seuil 4000 car. et ete decoupees en
+sous-morceaux : le seuil est bien dimensionne pour les bilans BVMT.
+
+**Pages 16 et 65 de Ciments de Bizerte** : OCR effectivement tente,
+Tesseract renvoie respectivement « NOTES AUX ETATS FINANCIERS » (26
+car., page de separation) et « 63/ » (3 car., foliotage). Aucune
+question du benchmark ne les cite. Benignes.
+
+### Pourquoi ces choix
+
+- **Mapping explicite plutot que glob** : les 6 PDFs ont des noms
+  variables (`real_monoprix_consolide_2024.pdf` != individuel). Une
+  table en dur dit noir sur blanc quels docs vont dans quel JSONL.
+- **Colonne OCR_TENT.** : la distinction entre « OCR candidat »,
+  « OCR tente » et « OCR reussi » est critique pour debugger. Si
+  demain la CI change et Tesseract disparait, OCR_TENT. tombe a 0
+  et le vrai probleme (OCR silencieusement off) est visible dans le
+  log.
+- **Normalisation tolerante aux espaces dans les nombres** :
+  `pdf.extract_text()` colle parfois « -44790 355 » tandis que
+  `_pdf_page_text()` ecrit « -44 790 355 ». Deux representations
+  du MEME nombre. Le test de couverture collapse les espaces
+  chiffre->chiffre des deux cotes pour comparer la substance (les
+  chiffres) et pas la typographie. Decouvert sur Q22 et Q23 de
+  Ciments de Bizerte : benchmark intact, test adapte.
+
+### Ce que j'ai appris
+
+- **Un bon signalement bat une correction automatique** : plutot
+  que de « forcer » les 2 pages Ciments vers un etat non-vide, le
+  script les annonce clairement et le test de couverture confirme
+  qu'elles n'impactent aucune question. L'inspection manuelle a
+  pris 2 minutes et a dissipe le doute.
+- **La duplication est insidieuse quand elle traverse les modules**.
+  La refacto Semaine 2.3 (helper `_grouper_mots_par_ligne` partage)
+  a produit un vrai gain : si demain on change la tolerance
+  verticale, un seul endroit a modifier.
+
+### Fichiers modifies dans la session
+
+- `scripts/chunk_corpus.py` : nouveau (~160 lignes).
+- `data/chunks/*.jsonl` : 6 fichiers, 249 chunks, ~520 Ko au total.
+- `tests/test_chunks_couverture_benchmark.py` : nouveau (2 tests).
