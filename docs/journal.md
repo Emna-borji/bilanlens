@@ -740,3 +740,75 @@ question du benchmark ne les cite. Benignes.
 - `scripts/chunk_corpus.py` : nouveau (~160 lignes).
 - `data/chunks/*.jsonl` : 6 fichiers, 249 chunks, ~520 Ko au total.
 - `tests/test_chunks_couverture_benchmark.py` : nouveau (2 tests).
+
+---
+
+## 2026-10-31 (fin de journée) — Une seule extraction de référence : `_pdf_page_text`
+
+### Ce que j'ai fait
+
+Trois changements liés, pour supprimer une divergence silencieuse
+entre « ce que le benchmark voit » et « ce que les chunks écrivent » :
+
+1. **`data/benchmark/questions.jsonl` — 3 champs corrigés** (format
+   seulement, aucune valeur de réponse modifiée) :
+   - `ciments_bizerte_2024_22.evidence_text`
+   - `ciments_bizerte_2024_23.evidence_text`
+   - `ciments_bizerte_2024_23.calculation.intermediate_values.resultat_net.evidence_text`
+
+   Avant : `"Resultat net de l'exercice -44790 355 -34 355944"`
+   Après : `"Resultat net de l'exercice -44 790 355 -34 355 944"`
+
+   Les montants sont inchangés (`answer.value = -44790355`,
+   `intermediate_values.resultat_net.value = -44790355`,
+   `answer.value = -11.52` pour Q23). Seul le format d'écriture dans
+   `evidence_text` est aligné sur ce que `_pdf_page_text` lit.
+
+2. **`tests/test_chunks_couverture_benchmark.py`** : retrait de
+   `_normaliser_tolerant_espaces_dans_nombres`. On revient à
+   `_normaliser` strict partout. La « tolérance aux espaces entre
+   chiffres » collait aussi deux colonnes voisines (ex. elle aurait
+   fusionné « 100 836 224 165 986 659 » en « 100836224165986659 »),
+   ce qui aurait masqué de vrais problèmes de chunking.
+
+3. **`tests/test_benchmark.py`** : `_texte_page` et `_texte_pdf_entier`
+   utilisent maintenant `_pdf_page_text` au lieu de
+   `pdfplumber.extract_text()`. Une seule extraction de référence
+   dans tout le projet : benchmark (annotation + validation),
+   chunks (`data/chunks/*.jsonl`), appli.
+
+### Pourquoi
+
+`pdfplumber.extract_text()` est capricieux : sur la même page 4 de
+Ciments de Bizerte, il écrit « -44 790 355 » sur la ligne 24 mais
+« -44790 355 » sur la ligne 22 (ce comportement dépend de micro-écarts
+horizontaux entre glyphes). Un `evidence_text` annoté à partir de cette
+méthode était fragile.
+
+`_pdf_page_text` reconstruit le texte à partir des positions des mots
+(`page.extract_words()` + regroupement par ligne visuelle + tri par
+`x0` + espace simple si gap petit, double espace si colonne). Sa
+sortie est stable et prévisible : « -44 790 355 » partout. En en
+faisant la référence unique, un `evidence_text` qui passe la
+validation benchmark est garanti présent dans le chunk correspondant.
+
+### Ce que j'ai appris
+
+- **Une référence unique bat deux représentations équivalentes**.
+  La tentation était de rendre le test tolérant pour accommoder deux
+  formats. En pratique, deux formats « équivalents » dérivent toujours
+  et introduisent des cas limites invisibles. Figer `_pdf_page_text`
+  comme source de vérité évite la question.
+- **Les corrections d'annotation ne doivent toucher qu'au format**,
+  jamais aux valeurs. Si une correction change une valeur, c'est que
+  l'annotation d'origine avait un bug plus grave : le signaler et le
+  traiter séparément.
+
+### Fichiers modifiés
+
+- `data/benchmark/questions.jsonl` : 3 occurrences corrigées
+  (format seulement).
+- `tests/test_benchmark.py` : `_pdf_page_text` au lieu de
+  `extract_text()` dans `_texte_page` et `_texte_pdf_entier`.
+- `tests/test_chunks_couverture_benchmark.py` : retrait de la
+  normalisation tolérante.

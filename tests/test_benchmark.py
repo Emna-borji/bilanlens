@@ -23,6 +23,8 @@ from pathlib import Path
 import pdfplumber
 import pytest
 
+from bilanlens.extraction import _pdf_page_text
+
 
 RACINE = Path(__file__).parent.parent
 BENCH_PATH = RACINE / "data" / "benchmark" / "questions.jsonl"
@@ -94,10 +96,19 @@ def cache_pages():
 
 
 def _texte_page(cache, nom_pdf, page_num):
+    """Texte normalise d'UNE page, obtenu via `_pdf_page_text`.
+
+    Une seule extraction de reference pour tout le projet : benchmark,
+    chunks (data/chunks/*.jsonl), appli. Si on utilisait
+    `pdfplumber.extract_text()` ici et `_pdf_page_text` cote chunks,
+    deux representations divergeraient et un `evidence_text` annote sur
+    l'une pourrait etre introuvable dans l'autre
+    (ex. « -44790 355 » vs « -44 790 355 », Ciments p.4, Q22/Q23).
+    """
     cle = (nom_pdf, page_num)
     if cle not in cache:
         with pdfplumber.open(DATA_PATH / nom_pdf) as pdf:
-            cache[cle] = _normaliser(pdf.pages[page_num - 1].extract_text() or "")
+            cache[cle] = _normaliser(_pdf_page_text(pdf.pages[page_num - 1]))
     return cache[cle]
 
 # le texte est enregistré dans un dictionnaire Python en mémoire vive (RAM)
@@ -109,10 +120,14 @@ def cache_pdfs_entiers():
 
 
 def _texte_pdf_entier(cache, nom_pdf):
+    """Texte normalise de TOUTES les pages concatenees, via `_pdf_page_text`.
+
+    Memes raisons que `_texte_page` : UNE seule extraction de reference.
+    """
     if nom_pdf not in cache:
         with pdfplumber.open(DATA_PATH / nom_pdf) as pdf:
             cache[nom_pdf] = _normaliser(
-                "\n".join((p.extract_text() or "") for p in pdf.pages)
+                "\n".join(_pdf_page_text(p) for p in pdf.pages)
             )
     return cache[nom_pdf]
 

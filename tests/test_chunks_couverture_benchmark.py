@@ -25,7 +25,6 @@ test echoue en LE SIGNALANT, pas en touchant au benchmark.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -36,28 +35,6 @@ from tests.test_benchmark import _normaliser
 RACINE = Path(__file__).parent.parent
 BENCH_PATH = RACINE / "data" / "benchmark" / "questions.jsonl"
 CHUNKS_DIR = RACINE / "data" / "chunks"
-
-
-def _normaliser_tolerant_espaces_dans_nombres(texte: str) -> str:
-    """`_normaliser` + colmatage des espaces entre deux chiffres.
-
-    Pourquoi : `evidence_text` du benchmark est annote a partir de
-    `pdfplumber.extract_text()`, qui parfois ecrit « -44790 355 » (espace
-    perdu). Les chunks sont ecrits par `_pdf_page_text()` qui preserve
-    les espaces inter-mots et ecrit « -44 790 355 ». C'est le MEME
-    nombre : la comparaison ne doit pas echouer sur ce formatage.
-
-    On ne touche pas aux espaces entre lettres, ni aux espaces entre
-    chiffre et lettre : seuls les espaces chiffre->chiffre sont collapses.
-    """
-    base = _normaliser(texte)
-    # Boucle plusieurs passes pour chainer « 1 2 3 » -> « 123 ».
-    for _ in range(5):
-        nouveau = re.sub(r"(\d)\s(\d)", r"\1\2", base)
-        if nouveau == base:
-            break
-        base = nouveau
-    return base
 
 
 # ---------------------------------------------------------------------------
@@ -84,9 +61,7 @@ def chunks_par_doc_et_page() -> dict:
             for ligne in f:
                 c = json.loads(ligne)
                 page = c["page_physique"]
-                index[doc].setdefault(page, []).append(
-                    _normaliser_tolerant_espaces_dans_nombres(c["texte"])
-                )
+                index[doc].setdefault(page, []).append(_normaliser(c["texte"]))
     if not index:
         pytest.skip(
             "data/chunks/*.jsonl vide : lance d'abord scripts/chunk_corpus.py"
@@ -132,9 +107,8 @@ def _coupe_entre_sous_morceaux(
     concatenation (avec un espace) le contient alors qu'aucun seul ne le
     contient. On teste au niveau des paires consecutives.
 
-    Note : `chunks_page` contient DEJA des textes normalises
-    (`_normaliser_tolerant_espaces_dans_nombres`), donc la concatenation
-    reste dans la meme forme.
+    `chunks_page` contient DEJA des textes normalises via `_normaliser`,
+    donc la concatenation reste dans la meme forme.
     """
     for a, b in zip(chunks_page, chunks_page[1:]):
         if segment_normalise in (a + " " + b):
@@ -162,7 +136,7 @@ def test_couverture_evidence_text_par_les_chunks(
             manquants.append(f"{q['id']} : aucun chunk pour {doc} p.{page}")
             continue
         for segment in _preuves_de(q["evidence_text"]):
-            seg_n = _normaliser_tolerant_espaces_dans_nombres(segment)
+            seg_n = _normaliser(segment)
             if _localiser_segment(seg_n, chunks_page) is not None:
                 continue
             # Preuve introuvable dans un sous-morceau unique. Est-elle
@@ -202,7 +176,7 @@ def test_couverture_intermediate_values_par_les_chunks(
                 continue
             # L'evidence_text d'un intermediate_value est en general une
             # ligne courte (ex. « Revenus 100 836 224 »), pas de « ... ».
-            seg_n = _normaliser_tolerant_espaces_dans_nombres(iv["evidence_text"])
+            seg_n = _normaliser(iv["evidence_text"])
             if _localiser_segment(seg_n, chunks_page) is not None:
                 continue
             if _coupe_entre_sous_morceaux(seg_n, chunks_page):
