@@ -10,6 +10,11 @@
 - Appel réel (marker `network`) : ignoré par défaut, lancé avec
   `pytest -m network`. Nécessite `GEMINI_API_KEY` dans `.env`.
 """
+
+# os : permet notamment de vérifier si une clé API existe.
+# MagicMock : crée un faux objet qui simule le comportement d'un client Gemini.
+# patch : remplace temporairement une fonction réelle par une version simulée.
+
 import os
 from unittest.mock import MagicMock, patch
 
@@ -44,6 +49,9 @@ def _fake_client_error(code: int):
 
 def _geminillm_mocke(model: str = "gemini-3.5-flash") -> GeminiLLM:
     """Instance de GeminiLLM sans passer par __init__ (pas de clé requise)."""
+    # Cela crée uniquement l'objet, sans exécuter son initialisation normale (__init__).
+
+# Pourquoi ? Parce qu'on veut éviter de configurer un véritable client Gemini. On ajoute ensuite manuellement les attributs nécessaires au test :
     inst = GeminiLLM.__new__(GeminiLLM)
     inst._api_key = "cle-test"
     inst._model = model
@@ -112,7 +120,7 @@ def test_gemini_llm_generate_construit_une_llm_response():
 # ---------------------------------------------------------------------------
 # 4. Backoff
 # ---------------------------------------------------------------------------
-@patch("bilanlens.llm.time.sleep")
+@patch("bilanlens._api_retry.time.sleep")
 def test_gemini_llm_backoff_429_puis_succes(mock_sleep):
     """Un 429 au 1er appel, succes au 2e. L'adapter reessaie et renvoie
     la reponse ; une seule attente a 2,0 s entre les deux tentatives."""
@@ -130,7 +138,7 @@ def test_gemini_llm_backoff_429_puis_succes(mock_sleep):
     mock_sleep.assert_called_once_with(2.0)
 
 
-@patch("bilanlens.llm.time.sleep")
+@patch("bilanlens._api_retry.time.sleep")
 def test_gemini_llm_403_remonte_immediatement(mock_sleep):
     """Une erreur != 429 (ex. 403 cle invalide) remonte sans reessayer."""
     from google.genai import errors
@@ -144,7 +152,7 @@ def test_gemini_llm_403_remonte_immediatement(mock_sleep):
     mock_sleep.assert_not_called()
 
 
-@patch("bilanlens.llm.time.sleep")
+@patch("bilanlens._api_retry.time.sleep")
 def test_gemini_llm_quota_epuise_leve_erreur_quota_depassee(mock_sleep):
     """5 x 429 → `ErreurQuotaDepassee` ; 4 attentes [2, 4, 8, 16] s
     (pas d'attente apres la derniere tentative)."""

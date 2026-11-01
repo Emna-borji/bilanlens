@@ -138,7 +138,7 @@ Python (ratios) et combiner ses résultats dans la réponse.
 | Brique | Outils (tous gratuits) |
 |---|---|
 | Parsing PDF et tableaux | Docling |
-| Embeddings | bge-m3 (local) |
+| Embeddings | **Gemini API `gemini-embedding-2`** maintenant (3072 dim, 8192 tokens, free tier TPM 30k) ; **bge-m3 sur Colab GPU** plus tard, comparé sur le benchmark (Recall@5, MRR, latence, coût, confidentialité) |
 | Base vectorielle + BM25 | Chroma (recherche hybride) |
 | Reranker | bge-reranker (local) |
 | LLM | Ollama (Qwen ou Llama) |
@@ -386,7 +386,8 @@ Machine de développement vérifiée en session : Intel Core i7-1270P,
 
 | Rôle | Candidats | Taille Q4 approx. | Verdict machine |
 |---|---|---|---|
-| Embeddings | `bge-m3` (BAAI, multilingue, 568 M) | ~1,2 GB | ✅ |
+| Embeddings | **Gemini API `gemini-embedding-2`** (3072 dim) → zéro disque, zéro RAM | 0 (API) | ✅ retenu pour V1 |
+| Embeddings (alternative) | `bge-m3` (BAAI, multilingue, 568 M) | ~1,2 GB | ⚠️ RAM tendue sur CPU 16 GB ; **reporté sur Colab GPU** pour comparaison benchmark |
 | Reranker | `bge-reranker-v2-m3` (568 M, multilingue) | ~1,2 GB | ✅ |
 | LLM local (défaut) | Qwen 3 1.7B / Qwen 3 4B-instruct, Phi-4-mini (3,8 B) | 1,0 - 2,5 GB | ✅ (10-20 tok/s CPU) |
 | LLM local (optionnel) | Qwen 3 8B, Llama 3.1 8B-instruct, Mistral 7B | 4,5 - 5 GB | ⚠️ (3-6 tok/s, RAM tendue) |
@@ -405,6 +406,21 @@ quotas en 2026 (notamment Gemini au 1er avril 2026).
 système, mesurer avec (a) le LLM local par défaut et (b) une API
 gratuite comme point de comparaison. Cela sépare l'effet du pipeline
 RAG de celui de la puissance brute du LLM.
+
+**Comparaison 2×2 des embeddings (prévue plus tard).** Une fois V1
+mesuré avec Gemini, brancher l'adapter `bge-m3` (Colab) et comparer
+sur le benchmark BVMT selon deux axes croisés :
+
+| Axe → | Dense (vecteurs seuls) | Hybride (BM25 + vecteurs) |
+|---|---|---|
+| **Gemini `gemini-embedding-2`** | V1 Gemini-dense | V2 Gemini-hybride |
+| **bge-m3 (Colab GPU)** | V1 bge-dense | V2 bge-hybride |
+
+Métriques à comparer sur chaque cellule : **Recall@5, MRR, latence,
+coût, confidentialité**. Le gagnant devient la baseline retenue pour
+V3 (reranker). L'adapter commun `Encodeur` (Protocol dans
+`bilanlens/embeddings.py`) permet de basculer sans toucher à
+`index.py` ni aux scripts d'évaluation.
 
 ### 5. Réutilisation du code existant
 

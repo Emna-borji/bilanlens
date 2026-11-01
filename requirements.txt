@@ -12,3 +12,6 @@ pytest>=8.0
 # Semaine 2 — LLM
 google-genai>=0.3
 python-dotenv>=1.0
+
+# Semaine 2 étape 4 — RAG (embeddings via API Gemini, index Chroma)
+chromadb>=0.5

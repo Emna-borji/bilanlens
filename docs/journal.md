@@ -936,3 +936,266 @@ donc rien ne change pour lui.
 
 - `bilanlens/extraction.py` : 1 ligne modifiée + 5 lignes de
   commentaire explicatif.
+
+---
+
+## 2026-10-31 (nuit, 2) — Semaine 2, étape 4 : pivot bge-m3 → API Gemini
+
+### Décision
+
+Pivot embeddings local (`bge-m3` + `sentence-transformers`) → **API
+Gemini (`gemini-embedding-2`)**. Raison : disque et RAM trop justes
+sur CPU 16 GB (poids 2,3 Go + encodage lent). L'API est gratuite dans
+sa limite free tier et déporte le calcul.
+
+**Plan de comparaison plus tard** : brancher un adapter bge-m3 sur
+**Google Colab (GPU T4 gratuit)** et comparer les deux encodeurs sur
+le benchmark avec les métriques du protocole : **Recall@5, MRR,
+latence, coût, confidentialité**. Interface `encoder_textes` identique
+pour les deux adapters, aucun changement dans `index.py` ni les
+scripts d'évaluation.
+
+### Vérifications préalables (avant toute écriture de code)
+
+| Point | Résultat |
+|---|---|
+| Modèles disponibles sur la clé | `gemini-embedding-001`, `gemini-embedding-2`, `gemini-embedding-2-preview` |
+| Modèle retenu | `gemini-embedding-2` (GA, dim=3072, `input_token_limit=8192`) |
+| Vecteurs natifs normalisés ? | **Oui** (norme L2 = 1,000000 vérifiée) → `hnsw:space=cosine` compatible |
+| `task_type` supporté ? | **Oui** : `RETRIEVAL_DOCUMENT` pour les chunks, `RETRIEVAL_QUERY` pour les questions. Stocké dans `coll.metadata["task_type_indexation"]`. |
+| Dimension réduite ? | **Non**, on garde 3072 (max du modèle) |
+| Tokens réels du corpus (count_tokens) | **186 031 tokens** sur 247 chunks — min 28 / max 2760 / moy 753 |
+| Chunks dépassant 2048 tokens ? | 5 chunks (sfbt p11/p13/p14, ciments p17/p52) → `gemini-embedding-001` les tronquerait, `gemini-embedding-2` passe |
+| Durée indexation estimée | **~7 min** (bornée par TPM 30k, pas RPM 100) |
+
+### Correction de mon erreur initiale sur les quotas
+
+**Mon estimation initiale « 1-2 appels suffisent » était fausse.**
+L'API `embed_content` accepte jusqu'à 100 contents par appel mais la
+somme des tokens doit tenir dans la fenêtre TPM. Avec 186 031 tokens
+et un TPM de 30 000, il faut au minimum ~8 lots espacés d'une minute.
+Correction : batching tokens-aware avec attente entre lots, pas
+batching par nombre de chunks.
+
+### Architecture retenue
+
+- `bilanlens/embeddings.py` :
+  - `EncodeurGemini` (dataclass : client + metadonnees quotas) ;
+  - `EncodeurFake` (dataclass : hash-based, pour les tests sans quota) ;
+  - `charger_encodeur()` ;
+  - `compter_tokens(encoder, texte)` (API gratuite) ;
+  - `_regrouper_en_lots_par_tpm(tokens, tpm_max, marge)` (**TODO(human)**
+    sur le bin-packing) ;
+  - `_appel_batch_avec_retry` (backoff exponentiel 2/4/8/16 s sur 429) ;
+  - `encoder_textes(encoder, textes, task_type)` → `(ndarray, stats)`
+    où `stats` contient `nb_appels_api`, `tokens_total`, `duree_s`,
+    `nb_lots`.
+- `bilanlens/index.py` : `indexer_chunks(coll, chunks, encoder, task_type)`
+  retourne désormais `(n, stats)` et passe `task_type` à `encoder_textes`.
+- `scripts/index_chunks.py` : estimation de durée affichée AVANT
+  l'indexation, puis récap avec modèle, task_type, dim, tokens total,
+  appels API, durée, chunks indexés, taille index, top-3 Q01 (encodée
+  avec `RETRIEVAL_QUERY`).
+- `tests/test_index.py` : 5 tests, 4 avec `EncodeurFake` (par défaut),
+  1 avec marker `network` qui tape l'API réelle.
+
+### Décisions prises
+
+| Décision | Justification |
+|---|---|
+| `gemini-embedding-2` plutôt que `001` | 8192 tokens vs 2048 : 5 chunks du corpus auraient été tronqués par le `001` |
+| Garder 3072 dim (pas de réduction) | Vecteurs restent unit-norm ; perte de précision inutile |
+| `task_type=RETRIEVAL_DOCUMENT` pour l'indexation, `RETRIEVAL_QUERY` pour les requêtes | Asymétrie recommandée par Google ; stocké dans `coll.metadata` pour reproductibilité |
+| Marker `network` pour les tests qui tapent l'API, pas de marker `embeddings` | Les tests d'index tournent par défaut avec `EncodeurFake` ; CI ne consomme pas de quota |
+| `chromadb` dans `requirements.txt` principal, suppression de `requirements-rag.txt` | Zéro install séparée ; plus de `torch`, plus de `sentence-transformers` |
+| Marge TPM 0,8 (24 000 tokens par lot) | Tolère l'écart entre `count_tokens` local et comptage effectif côté serveur |
+
+### À faire ensuite
+
+- Humain : écrire le corps de `_regrouper_en_lots_par_tpm` (bin-packing,
+  8-10 lignes).
+- Puis lancer `scripts/index_chunks.py` et montrer les mesures demandées
+  (modèle, task_type, dim, tokens, appels API, durée, chunks indexés,
+  taille index, top-3 Q01).
+- Plus tard : adapter bge-m3 Colab + comparaison benchmark.
+
+---
+
+## 2026-10-31 (nuit, 3) — 8 corrections sur l'adapter Gemini
+
+### Corrections appliquées (demandées par l'utilisateur)
+
+1. **`EncodeurFake` déterministe sha256** : `hash()` Python varie
+   avec `PYTHONHASHSEED` à chaque lancement ; remplacé par
+   `hashlib.sha256(f"{task_type}|{texte}")[:8] -> seed`. Test
+   `test_encodeur_fake_deterministe_entre_instances` vérifie que deux
+   instances fraîches produisent le même vecteur pour le même texte.
+2. **Comptage tokens unique** : `EncodeurGemini.compter_tokens` cache
+   chaque texte localement (`_tokens_cache: dict[str, int]`). Le
+   script `index_chunks.py` appelle `encoder.compter_tokens(texte)`
+   une fois pour l'estimation, et la 2e demande (dans
+   `embed_documents`) sort du cache local sans refaire d'appel. RPM
+   respecté via sliding window `deque[timestamp]` : au plus 100
+   appels dans la dernière minute.
+3. **Backoff factorisé** : nouveau `bilanlens/_api_retry.py` expose
+   `ErreurQuotaDepassee` et `appeler_avec_backoff(fn)`. `llm.py`
+   et `embeddings.py` l'utilisent. `tests/test_llm.py` patche
+   `bilanlens._api_retry.time.sleep` (au lieu de `bilanlens.llm.time.sleep`).
+4. **Interface `Encodeur` (Protocol)** avec `embed_documents(textes) ->
+   (ndarray, stats)` et `embed_query(texte) -> ndarray`. Pas de
+   `isinstance` dans `index.py` ni dans les scripts : polymorphisme
+   via le Protocol.
+5. **Cache embeddings sur disque** : `data/cache_embeddings/<model>.jsonl`
+   (gitignoré), append-only, clé = sha256(model|task_type|texte).
+   Test `test_cache_embeddings_zero_appel_a_la_2e_indexation` vérifie
+   avec `EncodeurFake` qu'une 2e indexation fait 0 vecteur recalculé.
+6. **Collection Chroma par modèle** : `nom_collection(model)` →
+   `bilans__gemini-embedding-2`. Permet de brancher bge-m3 plus tard
+   sans mélanger les espaces vectoriels.
+7. **Note confidentialité** dans `README.md` : le free tier Gemini
+   peut utiliser les données envoyées ; acceptable ici (rapports BVMT
+   publics), pas adapté aux documents confidentiels. Bascule
+   recommandée : plan payant Google ou adapter `bge-m3` local.
+8. **Plan 2×2 (Gemini, bge-m3) × (dense, hybride BM25)** dans
+   `planning.md` section « Modèles candidats ». Métriques : Recall@5,
+   MRR, latence, coût, confidentialité.
+
+### Logique du bin-packing (`_regrouper_en_lots_par_tpm`)
+
+> Trois lignes : (1) un lot courant accumule des indices tant que
+> `tokens_courant + n` reste sous `budget = TPM_MAX * MARGE_QUOTA` ET
+> que `len(lot_courant)` reste sous `max_contents_par_appel`. (2) Si
+> l'une des deux conditions casse, on pousse le lot courant (s'il
+> n'est pas vide) et on redémarre un nouveau lot avec le texte en
+> cours. (3) Après la boucle, on flushe le dernier lot courant s'il
+> est non vide.
+>
+> C'est un bin-packing First Fit qui préserve l'ordre d'entrée : les
+> chunks sortent dans le même ordre qu'ils sont entrés, pratique pour
+> l'alignement avec les IDs stables de Chroma.
+
+### Fichiers modifiés / créés
+
+- Créés : `bilanlens/_api_retry.py`.
+- Réécrits : `bilanlens/embeddings.py`, `bilanlens/index.py`,
+  `scripts/index_chunks.py`, `tests/test_index.py`.
+- Édités : `bilanlens/llm.py` (import `_api_retry`), `tests/test_llm.py`
+  (patch sleep déplacé), `.gitignore` (+ cache_embeddings),
+  `README.md` (+ section Confidentialité), `docs/planning.md` (+ 2×2),
+  `requirements.txt` (+ chromadb), `pytest.ini` (- marker embeddings).
+- Supprimé : `requirements-rag.txt`.
+
+### Correction à l'exécution : `gemini-embedding-2` ne fait pas de batch
+
+**Première tentative d'indexation** : `np.asarray(tous_vecteurs)` lève
+`ValueError: inhomogeneous shape`. Diagnostic : le cache ne contenait
+que **8 entrées** (une par lot) au lieu de 247. Cause : `embed_content(
+contents=[t1, t2, ...])` sur `gemini-embedding-2` renvoie **UN seul**
+embedding — vraisemblablement la concaténation ou le premier content —
+au lieu de N embeddings. Comportement **différent** de
+`gemini-embedding-001` qui bat correctement.
+
+Vérifié dans la session précédente (scratchpad `gemini_embed_check.py`) :
+
+```
+=== gemini-embedding-2 ===
+  [0] dim = 3072, norme L2 = 1.000000      # UN SEUL vecteur !
+
+=== gemini-embedding-001 ===
+  [0] dim = 3072, norme L2 = 1.000000
+  [1] dim = 3072, norme L2 = 1.000000      # DEUX vecteurs OK
+```
+
+**Correction appliquée** dans `embeddings.py:_call_embed_batch` : la
+fonction fait maintenant N appels séquentiels (un par texte) au lieu
+d'un seul appel batch. Le bin-packing TPM reste inchangé : chaque
+"lot" vise ~24 000 tokens, on fait les N appels rapides à l'intérieur,
+puis on attend 60 s pour libérer la fenêtre glissante. RPM 100/min
+reste largement en dessous (max ~38 req/min dans un lot).
+
+Cache vidé (`rm data/cache_embeddings/gemini-embedding-2.jsonl`),
+indexation relancée.
+
+### Ce que j'ai appris
+
+- **Lire les sorties des petits scripts d'exploration vaut mieux que
+  faire confiance à l'intuition.** Mon `gemini_embed_check.py` avait
+  déjà montré que `gemini-embedding-2` retournait UN embedding pour
+  deux contents — mais je ne l'avais pas relu attentivement, et j'ai
+  codé le batch en supposant que ça marchait comme le `001`. Perdre
+  10 min d'indexation + un cache à vider aurait pu être évité par
+  une relecture de 10 secondes du script de check.
+- **Un ndarray `np.asarray(liste_de_listes_de_tailles_differentes)`
+  lève `inhomogeneous shape`**. C'est le signe qu'un indice a été
+  oublié (resté à `None`) ou qu'une sous-liste a une mauvaise taille.
+  Un check `assert len(vecteurs) == len(batch)` dans `_call_embed_batch`
+  aurait fait tomber le bug directement sur la ligne responsable.
+
+---
+
+## 2026-11-01 — Durcissement cache + garde-fou N→N
+
+### Ce que j'ai fait
+
+Après la 1re indexation complète (Q01 au top-1), 5 points de
+durcissement avant commit :
+
+1. **Garde-fou "N textes → N vecteurs"** dans `tests/test_index.py` :
+   - `test_embed_documents_fake_renvoie_N_vecteurs` : `EncodeurFake`
+     avec 5 textes → shape `(5, dim)`.
+   - `test_encodeur_gemini_N_textes_renvoie_N_vecteurs_3072` (marker
+     `network`) : 3 textes réels → shape `(3, 3072)`, et cosinus
+     hors-diagonale < 0,999 (sinon régression vers un batch qui
+     renvoie un vecteur agrégé dupliqué).
+   - Au passage, le test réseau existant
+     `test_encodeur_gemini_vecteurs_natifs_unit_norm` passait
+     silencieusement avant la correction : il attendait
+     `nb_appels_embed == 1` pour 2 textes (hérité de l'ancien
+     batch). Maintenant il attend `== 2`.
+2. **Doc Gemini sur le batch** : la doc officielle confirme que
+   `gemini-embedding-2` **agrège** une liste de contents en un
+   seul vecteur. Pour N vecteurs séparés, Google renvoie vers la
+   **Batch API asynchrone** (soumission d'un job, récupération
+   différée). Le `batchEmbedContents` synchrone n'existe que pour
+   `gemini-embedding-001`. Notre choix (N appels séquentiels dans
+   un lot TPM, puis attente de 60 s) reste donc le seul mode
+   synchrone correct pour `gemini-embedding-2`. Si on paye un jour,
+   la Batch API offre -50 % selon des sources tierces.
+3. **Persistance du cache `count_tokens` sur disque** :
+   `_CacheTokens` (append-only JSONL, clé `sha256(model|texte)`)
+   dans `bilanlens/embeddings.py`. Fichier :
+   `data/cache_embeddings/<model>__tokens.jsonl` (gitignore). La
+   clé ne contient pas le `task_type` : `count_tokens` ne dépend
+   pas de la façon dont le texte sera utilisé ensuite. Objectif
+   atteint : une 2e indexation du même corpus fait **0 appel
+   count + 0 appel embed = 0 appel API au total**.
+
+### Pourquoi
+
+- **Le bug du vecteur unique n'était pas détecté par la suite** :
+  seule une tentative d'indexation réelle le faisait tomber, via
+  `inhomogeneous shape`. Un test rapide avec le `EncodeurFake` et
+  un test réseau garde-fou verrouillent le comportement attendu.
+- **Le cache tokens n'était qu'en RAM** : la 2e indexation refaisait
+  les 247 `count_tokens` (gratuit mais 126 s de latence et bruit
+  dans l'objectif "0 appel API"). Persister le comptage sur disque
+  est trivial (même pattern que `_CacheEmbeddings`, un entier au
+  lieu d'un vecteur) et nettoie l'affirmation "idempotence totale".
+
+### Ce que j'ai appris
+
+- **Le texte d'une doc officielle vaut mieux qu'un test empirique
+  pour affirmer "ne fait pas de batch".** `gemini-embedding-2`
+  n'est pas "cassé" : il est documenté pour agréger une liste en
+  un vecteur unique. Le script d'exploration avait raison, mais la
+  doc officielle donne le "pourquoi" (modèle multimodal avec
+  agrégation inter-contenus explicite).
+- **Un test de shape vaut plus qu'un test de norme.** Les deux
+  tests précédents vérifiaient la norme L2 ≈ 1, mais pas la shape
+  `(N, dim)` — une shape `(1, dim)` passait aussi. Le vrai garde-fou
+  est sur la forme.
+- **Deux caches à côté d'un même modèle, deux schémas de clé
+  différents.** Embeddings : `sha256(model | task_type | texte)`
+  car le vecteur dépend du task_type. Tokens : `sha256(model | texte)`
+  seulement, car `count_tokens(model, contents=texte)` donne la
+  même valeur quel que soit l'usage ultérieur du texte.

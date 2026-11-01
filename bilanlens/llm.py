@@ -14,6 +14,11 @@ from typing import Protocol, runtime_checkable
 
 from dotenv import load_dotenv
 
+# Reexport : ErreurQuotaDepassee est factorisee dans _api_retry pour
+# etre partagee avec bilanlens.embeddings. Les anciens imports
+# `from bilanlens.llm import ErreurQuotaDepassee` continuent de marcher.
+from bilanlens._api_retry import ErreurQuotaDepassee, appeler_avec_backoff  # noqa: F401
+
 
 @dataclass(frozen=True)
 class LLMResponse:
@@ -44,10 +49,6 @@ class LLM(Protocol):
         system: str | None = None,
         temperature: float = 0.0,
     ) -> LLMResponse: ...
-
-
-class ErreurQuotaDepassee(RuntimeError):
-    """Levée quand le quota free tier est épuisé après N tentatives."""
 
 
 class GeminiLLM:
@@ -109,31 +110,17 @@ class GeminiLLM:
         )
 
     def _appel_avec_backoff(self, prompt, config, max_tentatives: int = 5):
-        """Appel Gemini avec backoff exponentiel sur erreurs de quota (429).
+        """Appel Gemini avec backoff exponentiel sur 429.
 
-        Attente initiale 2 s, doublée à chaque reprise (2, 4, 8, 16 s).
-        Pas d'attente après la dernière tentative. Toute erreur autre
-        qu'un 429 (ex. 403 clé invalide, 400 prompt mal formé) se
-        propage immédiatement.
+        Delegation a `appeler_avec_backoff` (bilanlens._api_retry) :
+        le meme code de reprise sert aussi pour les embeddings.
         """
-        from google.genai import errors
-
-        attente = 2.0
-        for tentative in range(max_tentatives):
-            try:
-                return self._client.models.generate_content(
-                    model=self._model, contents=prompt, config=config,
-                )
-            except errors.ClientError as erreur:
-                if erreur.code != 429:
-                    raise
-                if tentative == max_tentatives - 1:
-                    raise ErreurQuotaDepassee(
-                        f"Quota Gemini (429) : echec apres {max_tentatives} "
-                        f"tentatives."
-                    ) from erreur
-                time.sleep(attente)
-                attente *= 2
+        return appeler_avec_backoff(
+            lambda: self._client.models.generate_content(
+                model=self._model, contents=prompt, config=config,
+            ),
+            max_tentatives=max_tentatives,
+        )
 
     def list_models(self) -> list[str]:
         """Liste les modèles disponibles pour cette clé.

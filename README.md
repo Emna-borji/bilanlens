@@ -217,6 +217,27 @@ par équilibre du bilan — ce choix est signalé dans la note du ratio.
 - Le diagnostic est pédagogique et ne constitue pas un conseil
   d'investissement.
 
+## Confidentialité des embeddings (semaine 2 étape 4)
+
+Les embeddings sont générés via l'**API Gemini (`gemini-embedding-2`)**
+sous quota free tier. Google indique dans ses CGU que les requêtes
+du free tier **peuvent être utilisées pour améliorer ses modèles**.
+
+C'est **acceptable pour BilanLens** parce que le corpus de départ est
+constitué de **rapports annuels publics BVMT** déjà disponibles sur
+[bvmt.com.tn](https://www.bvmt.com.tn/).
+
+Ce n'est **pas adapté à des documents confidentiels** (plan d'affaires
+interne, données clients non publiées, pièces d'audit). Pour un tel
+usage, basculer sur :
+
+- un plan **payant** Google (les requêtes payantes ne sont pas
+  utilisées pour l'entraînement) ;
+- ou un **adapter local** `bge-m3` (sur Google Colab pour le calcul,
+  stockage des vecteurs côté machine locale). L'interface
+  `bilanlens.embeddings.Encodeur` est faite pour accueillir cet
+  adapter sans toucher à `index.py`.
+
 ## Licence
 
 MIT — voir [LICENSE](LICENSE).
