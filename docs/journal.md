@@ -1199,3 +1199,158 @@ durcissement avant commit :
   car le vecteur dépend du task_type. Tokens : `sha256(model | texte)`
   seulement, car `count_tokens(model, contents=texte)` donne la
   même valeur quel que soit l'usage ultérieur du texte.
+
+---
+
+## 2026-11-01 — Étape 5 : evaluate_b0.py + distinction quota RPM vs RPD
+
+### Ce que j'ai fait
+
+Script `scripts/evaluate_b0.py` : évaluation du LLM seul (sans contexte
+RAG) sur les 31 questions du benchmark, avec checkpoint append-only
+sur `(run_id, question_id)` et prompt partagé B0/V1 (voir
+`bilanlens/prompts.py`). Les 4 corrections demandées :
+
+1. **Checkpoint sur le couple `(run_id, question_id)`** : un nouveau
+   `run_id` (= nouveau prompt ou nouveau modèle) force à retraiter
+   toutes les questions. Vérifié par un test dédié.
+2. **Prompt partagé B0/V1** : `SYSTEM_INSTRUCTION` + templates dans
+   `bilanlens/prompts.py`. Hash court `prompt_version` (16 hex de
+   SHA-256) enregistré par ligne. Modifier les règles invalide
+   automatiquement les anciens checkpoints.
+3. **JSON strict côté API** : `response_mime_type="application/json"`
+   + `response_schema` à 2 clés `{answer, confidence}`. Côté client,
+   `parser_reponse` reste défensif : `parse_ok=False` sans crash si
+   JSON invalide. `answer_raw` conservé dans tous les cas pour debug.
+4. **Pas d'outils/grounding** : `tools=[]` explicite dans
+   `GenerateContentConfig`. Test de spy sur le constructeur de
+   config pour s'assurer que le kwarg est bien passé.
+
+Deux incidents en condition réelle, chacun transformé en règle :
+
+### Incident 1 : 503 UNAVAILABLE à la 8ᵉ question
+
+**Symptôme** : `google.genai.errors.ServerError: 503 UNAVAILABLE.
+"This model is currently experiencing high demand"`.
+
+**Problème** : `_api_retry.py` n'attrapait que `errors.ClientError`
+(4xx). Un 5xx remontait sans retry et plantait la boucle.
+
+**Correction** : branche `except errors.ServerError` séparée, mêmes
+délais `[2, 4, 8, 16]` s, re-lève l'erreur originale après N
+tentatives (**pas** `ErreurQuotaDepassee` : une surcharge Google
+n'est pas un épuisement de quota, le script appelant doit pouvoir
+distinguer).
+
+### Incident 2 : 429 à la 19ᵉ question — quota RPD épuisé
+
+**Symptôme** : `429 RESOURCE_EXHAUSTED. Quota exceeded for metric:
+generate_content_free_tier_requests, limit: 20, model:
+gemini-3.6-flash. Please retry in 15h49m33s.`
+
+**Découverte** : le free tier `gemini-3.6-flash` a seulement
+**20 RPD** (requêtes par jour), pas 500 ou 1500 comme suggèrent
+plusieurs sources tierces. L'alias `gemini-3.5-flash` que j'utilisais
+résout vers `gemini-3.6-flash` côté Google (vérifié dans le
+`model_version` renvoyé). La quasi-totalité du quota avait été
+consommée en 2 runs successifs (débugs du 503).
+
+**Problème conceptuel** : le backoff `[2, 4, 8, 16]` s de 5 tentatives
+n'avait **aucun sens** quand Google indique `retryDelay: 56973s` —
+j'ai attendu 30 s pour planter avec `ErreurQuotaDepassee` quand il
+fallait planter net.
+
+**Correction** : nouvelle exception `ErreurQuotaJournalier` (hérite
+de `ErreurQuotaDepassee`), levée **immédiatement** si `retryDelay > 60 s`
+dans la réponse Google. Extraction robuste via `_extract_retry_delay_s`
+(trois chemins : `exc.details`, `exc.response_json`, regex fallback).
+Le script `evaluate_b0.py` attrape l'exception, affiche
+`"X/31 faits, relancer après HH:MM Tunis"` et sort avec le code 2
+(convention locale : 1 = fatal, 2 = quota journalier).
+
+### Résultat partiel sur 18/31 questions (run du 2026-10-31)
+
+- **100 % de réponses `"donnée non disponible"`** (18/18).
+- 0 `parse_ok=False` (le JSON schema fonctionne).
+- Latence moyenne : **4,01 s** (min 1,93 / max 9,36).
+- Catégories couvertes : extraction (5), calcul (4), comparaison (4),
+  texte_annexes (3), sans_reponse (2).
+
+### Ce que j'ai appris
+
+- **Un code HTTP ne suffit pas à décider d'une stratégie.** Deux 429
+  identiques peuvent être « attends 2 s, j'ai dépassé le RPM » ou
+  « attends 15 h, tu as consommé ton RPD ». Le `retryDelay` du corps
+  JSON est l'indicateur exploitable, pas le code.
+- **Pin le nom pinné, pas l'alias.** `gemini-3.5-flash` est un
+  pointeur mobile ; Google peut le promouvoir vers un nouveau modèle
+  sans préavis. Enregistrer le `model_version` renvoyé dans chaque
+  ligne de résultats permet de distinguer deux runs qui ont tapé
+  deux modèles différents « sous le même nom ».
+- **Un sous-type d'exception bien choisi évite le piège du `except`
+  trop large.** `ErreurQuotaJournalier(ErreurQuotaDepassee)` :
+  l'ancien code qui attrape `ErreurQuotaDepassee` continue de
+  marcher, le nouveau code peut distinguer finement en attrapant
+  `ErreurQuotaJournalier` AVANT. Pas de breaking change.
+- **Un benchmark à 100 % d'abstention est un plancher très honnête.**
+  B0 mesure zéro réponse correcte, donc tout gain mesuré par V1
+  sera **attribué sans ambiguïté au RAG**, pas à la connaissance
+  préalable du LLM. À l'opposé, si B0 répondait à 60 % des questions
+  correctement par pure mémoire des rapports BVMT, la différence
+  V1−B0 serait difficile à interpréter. **À tester plus tard** :
+  variante B0 **sans la consigne d'abstention**, pour mesurer les
+  hallucinations (le LLM invente-t-il des chiffres plausibles ?).
+
+### Décisions prises
+
+| Décision | Justification |
+|---|---|
+| `DEFAULT_MODEL = "gemini-3.6-flash"` (pas l'alias) | Reproductibilité : si Google promeut l'alias à un nouveau modèle, notre code reste identique |
+| Seuil `retryDelay > 60 s` pour distinguer RPD de RPM | Un RPM se régénère en &lt; 60 s ; au-delà, c'est forcément un quota journalier |
+| `EXIT_CODE_QUOTA_JOURNALIER = 2` | Permet à un wrapper CI de distinguer « replanifier demain » (2) d'une erreur fatale (1) |
+| Message d'arrêt en fonction `message_arret_quota_journalier(maintenant=...)` injectable | Testable sans dépendance à l'horloge réelle |
+| Même modèle pour B0 et V1 | La différence B0 vs V1 doit mesurer le RAG, pas un changement de modèle |
+
+### Fichiers modifiés dans la session
+
+- `bilanlens/prompts.py` : nouveau (SYSTEM_INSTRUCTION partagé,
+  TEMPLATE_B0_USER, TEMPLATE_V1_USER, JSON_SCHEMA_REPONSE,
+  prompt_version_b0, prompt_version_v1).
+- `bilanlens/llm.py` : `generate()` accepte `response_schema`,
+  `tools=[]` explicite, `DEFAULT_MODEL = "gemini-3.6-flash"`,
+  re-export `ErreurQuotaJournalier`.
+- `bilanlens/_api_retry.py` : `ErreurQuotaJournalier`,
+  `_extract_retry_delay_s`, retry 5xx séparé.
+- `scripts/evaluate_b0.py` : nouveau, checkpoint `(run_id, qid)`,
+  `message_arret_quota_journalier` injectable, `EXIT_CODE_QUOTA_JOURNALIER`.
+- `tests/test_llm.py` : +4 tests (503 ok, 503 persistant lève
+  ServerError, 429 RPD lève ErreurQuotaJournalier immédiatement,
+  héritage ErreurQuotaJournalier ⊂ ErreurQuotaDepassee).
+- `tests/test_evaluate_b0.py` : nouveau, 16 tests (4 corrections +
+  message d'arrêt + exit code).
+- `results/b0.jsonl` : 18/31 lignes partielles (**non commité**,
+  le sera après les 31 réponses complètes).
+
+### Reste à faire (bloqué par quota)
+
+- Attendre la régénération du quota RPD (~minuit Pacific = 09h Tunis).
+- Relancer `evaluate_b0.py` → checkpoint reprend aux 13 restantes.
+- Afficher les stats finales (31 lignes).
+- Décider du modèle pour B0 et V1 d'après les quotas AI Studio
+  réels (voir ci-dessous).
+
+### Quotas Gemini free tier à vérifier dans AI Studio
+
+Les chiffres ci-dessous proviennent de sources tierces et de
+l'erreur Google reçue en condition réelle ; **à confirmer dans
+AI Studio** (page connectée, section « Rate limits ») avant de
+figer un choix de modèle pour les runs sérieux :
+
+| Modèle (API ID) | RPM | RPD free | Verdict |
+|---|---|---|---|
+| `gemini-3.6-flash` (alias `gemini-3.5-flash`) | ~15 | **20** | ❌ celui qui m'a bloqué — insuffisant |
+| `gemini-3.5-flash-lite` | ~10 | **500** | ✅ candidat sérieux pour B0+V1 (62 appels) |
+| `gemini-3.1-flash-lite` | ~15 | 500 | ✅ fallback stable |
+
+Décision reportée à la relance de demain, après vérification
+AI Studio de ma clé.

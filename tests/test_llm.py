@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 
 from bilanlens.llm import (
     ErreurQuotaDepassee,
+    ErreurQuotaJournalier,
     GeminiLLM,
     LLM,
     LLMResponse,
@@ -35,15 +36,38 @@ from bilanlens.llm import (
 load_dotenv()
 
 
-def _fake_client_error(code: int):
+def _fake_client_error(code: int, retry_delay_s: int | None = None):
     """Fabrique un faux `errors.ClientError` sans passer par son
-    constructeur (dont la signature peut changer entre versions)."""
+    constructeur (dont la signature peut changer entre versions).
+
+    Si `retry_delay_s` est fourni, pose un attribut `details` au format
+    Google RPC (`RetryInfo` avec `retryDelay: 'Ns'`). Permet de simuler
+    un 429 RPD (quota journalier) vs un 429 RPM (quota minute)."""
     from google.genai import errors
     err = errors.ClientError.__new__(errors.ClientError)
     err.code = code
     err.message = f"Erreur simulee {code}"
     err.args = (err.message,)
     err.status = "RESOURCE_EXHAUSTED" if code == 429 else "ERREUR"
+    if retry_delay_s is not None:
+        err.details = [
+            {"@type": "type.googleapis.com/google.rpc.Help", "links": []},
+            {
+                "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                "retryDelay": f"{retry_delay_s}s",
+            },
+        ]
+    return err
+
+
+def _fake_server_error(code: int = 503):
+    """Fabrique un faux `errors.ServerError` (500/502/503/504)."""
+    from google.genai import errors
+    err = errors.ServerError.__new__(errors.ServerError)
+    err.code = code
+    err.message = f"Erreur serveur simulee {code}"
+    err.args = (err.message,)
+    err.status = "UNAVAILABLE" if code == 503 else "ERREUR_SERVEUR"
     return err
 
 
@@ -153,9 +177,46 @@ def test_gemini_llm_403_remonte_immediatement(mock_sleep):
 
 
 @patch("bilanlens._api_retry.time.sleep")
+def test_gemini_llm_backoff_503_puis_succes(mock_sleep):
+    """Un 503 (surcharge Google) au 1er appel, succes au 2e. Le
+    backoff doit retenter avec le meme delai initial que pour 429."""
+    inst = _geminillm_mocke()
+    reponse_ok = MagicMock(text="ok", model_version="gemini-3.5-flash-001")
+    inst._client.models.generate_content.side_effect = [
+        _fake_server_error(503),
+        reponse_ok,
+    ]
+
+    result = inst.generate("test")
+
+    assert result.text == "ok"
+    assert inst._client.models.generate_content.call_count == 2
+    mock_sleep.assert_called_once_with(2.0)
+
+
+@patch("bilanlens._api_retry.time.sleep")
+def test_gemini_llm_503_persistant_releve_server_error(mock_sleep):
+    """5 x 503 → l'erreur originale `ServerError` est re-levee
+    (pas `ErreurQuotaDepassee` : ce n'est pas un quota)."""
+    from google.genai import errors
+    inst = _geminillm_mocke()
+    inst._client.models.generate_content.side_effect = [
+        _fake_server_error(503) for _ in range(5)
+    ]
+
+    with pytest.raises(errors.ServerError):
+        inst.generate("test")
+
+    assert inst._client.models.generate_content.call_count == 5
+    assert mock_sleep.call_count == 4
+    delais = [c.args[0] for c in mock_sleep.call_args_list]
+    assert delais == [2.0, 4.0, 8.0, 16.0]
+
+
+@patch("bilanlens._api_retry.time.sleep")
 def test_gemini_llm_quota_epuise_leve_erreur_quota_depassee(mock_sleep):
-    """5 x 429 → `ErreurQuotaDepassee` ; 4 attentes [2, 4, 8, 16] s
-    (pas d'attente apres la derniere tentative)."""
+    """5 x 429 (sans retryDelay) → `ErreurQuotaDepassee` ; 4 attentes
+    [2, 4, 8, 16] s (pas d'attente apres la derniere tentative)."""
     inst = _geminillm_mocke()
     inst._client.models.generate_content.side_effect = [
         _fake_client_error(429) for _ in range(5)
@@ -168,6 +229,36 @@ def test_gemini_llm_quota_epuise_leve_erreur_quota_depassee(mock_sleep):
     assert mock_sleep.call_count == 4
     delais = [c.args[0] for c in mock_sleep.call_args_list]
     assert delais == [2.0, 4.0, 8.0, 16.0]
+
+
+@patch("bilanlens._api_retry.time.sleep")
+def test_gemini_llm_429_rpd_leve_erreur_quota_journalier_immediatement(mock_sleep):
+    """Un 429 avec `retryDelay > 60s` (quota journalier) doit lever
+    `ErreurQuotaJournalier` IMMEDIATEMENT : zero retry, zero sleep.
+    Attendre 15 h dans une boucle de backoff n'a aucun sens."""
+    inst = _geminillm_mocke()
+    inst._client.models.generate_content.side_effect = [
+        _fake_client_error(429, retry_delay_s=56973),  # ~15h49
+    ]
+
+    with pytest.raises(ErreurQuotaJournalier) as excinfo:
+        inst.generate("test")
+
+    # Le delai est bien recupere depuis l'exception Google.
+    assert excinfo.value.retry_delay_s == 56973.0
+    # Zero retry : un seul appel API.
+    assert inst._client.models.generate_content.call_count == 1
+    # Zero sleep : pas d'attente du tout.
+    mock_sleep.assert_not_called()
+
+
+def test_erreur_quota_journalier_herite_de_quota_depassee():
+    """`ErreurQuotaJournalier` doit etre un sous-type de
+    `ErreurQuotaDepassee` : les `except ErreurQuotaDepassee` existants
+    attrapent toujours les deux cas."""
+    exc = ErreurQuotaJournalier(retry_delay_s=56973)
+    assert isinstance(exc, ErreurQuotaDepassee)
+    assert exc.retry_delay_s == 56973.0
 
 
 # ---------------------------------------------------------------------------

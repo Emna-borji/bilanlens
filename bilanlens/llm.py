@@ -14,10 +14,14 @@ from typing import Protocol, runtime_checkable
 
 from dotenv import load_dotenv
 
-# Reexport : ErreurQuotaDepassee est factorisee dans _api_retry pour
-# etre partagee avec bilanlens.embeddings. Les anciens imports
-# `from bilanlens.llm import ErreurQuotaDepassee` continuent de marcher.
-from bilanlens._api_retry import ErreurQuotaDepassee, appeler_avec_backoff  # noqa: F401
+# Reexport : ErreurQuotaDepassee et ErreurQuotaJournalier sont
+# factorisees dans _api_retry pour etre partagees avec
+# bilanlens.embeddings. Les anciens imports continuent de marcher.
+from bilanlens._api_retry import (  # noqa: F401
+    ErreurQuotaDepassee,
+    ErreurQuotaJournalier,
+    appeler_avec_backoff,
+)
 
 
 @dataclass(frozen=True)
@@ -29,7 +33,7 @@ class LLMResponse:
     code de l'époque, dont les valeurs par défaut peuvent avoir changé.
     """
     text: str
-    model: str          # version pinnée servie, ex. "gemini-2.5-flash"
+    model: str          # version pinnée servie, ex. "gemini-3.6-flash"
     provider: str       # "gemini", "groq", "ollama", ...
     temperature: float  # la température RÉELLEMENT utilisée
     latency_s: float    # temps mesuré côté client
@@ -48,6 +52,7 @@ class LLM(Protocol):
         prompt: str,
         system: str | None = None,
         temperature: float = 0.0,
+        response_schema: dict | None = None,
     ) -> LLMResponse: ...
 
 
@@ -58,12 +63,20 @@ class GeminiLLM:
     `.env` si présent. Elle n'est JAMAIS incluse dans `LLMResponse`,
     dans les logs ni dans `results/*.jsonl` : elle reste dans l'instance.
 
-    Reproductibilité : `model` doit être une version pinnée (ex.
-    `"gemini-2.5-flash"`), pas un alias flottant (`"gemini-flash-latest"`).
+    Reproductibilité : `model` doit être le nom pinné réellement
+    servi (ex. `"gemini-3.6-flash"`), pas un alias flottant
+    (`"gemini-flash-latest"`, `"gemini-3.5-flash"` qui est l'alias
+    actuel de `gemini-3.6-flash` cote Google). Le nom pinné reste
+    valide quand Google promeut le prochain Flash a l'alias.
     """
 
     PROVIDER = "gemini"
-    DEFAULT_MODEL = "gemini-3.5-flash"
+    # Nom pinne reellement servi par Google (verifie via `model_version`
+    # dans la reponse). L'alias `gemini-3.5-flash` resout vers
+    # `gemini-3.6-flash` depuis l'automne 2026, mais pinner le vrai
+    # nom garantit la reproductibilite : si Google promeut
+    # `gemini-3.8-flash` a l'alias demain, notre code reste identique.
+    DEFAULT_MODEL = "gemini-3.6-flash"
 
     def __init__(self, model: str = DEFAULT_MODEL, api_key: str | None = None):
         load_dotenv()
@@ -84,21 +97,39 @@ class GeminiLLM:
         prompt: str,
         system: str | None = None,
         temperature: float = 0.0,
+        response_schema: dict | None = None,
     ) -> LLMResponse:
+        """Appelle le LLM.
+
+        `response_schema` : si fourni, force la sortie en JSON
+        conforme au schema (`response_mime_type="application/json"`).
+        Reduit drastiquement les reponses mal formees cote scoring.
+
+        **Pas d'outils, pas de grounding** : la config n'active ni
+        Google Search, ni code execution, ni function calling. B0
+        doit mesurer le LLM SEUL (pas d'acces au web). V1 passera
+        son contexte RAG dans le prompt, pas via un outil.
+        """
         from google.genai import types
 
-        config = types.GenerateContentConfig(
-            temperature=temperature,
-            system_instruction=system,
-        )
+        kwargs: dict = {
+            "temperature": temperature,
+            "system_instruction": system,
+            # Explicite : pas d'outils actives (voir docstring).
+            "tools": [],
+        }
+        if response_schema is not None:
+            kwargs["response_mime_type"] = "application/json"
+            kwargs["response_schema"] = response_schema
+        config = types.GenerateContentConfig(**kwargs)
         depart = time.perf_counter()
         reponse = self._appel_avec_backoff(prompt, config)
         duree = time.perf_counter() - depart
 
         texte = getattr(reponse, "text", None) or ""
-        # L'API retourne parfois la version pinnée réellement servie
-        # (ex. "gemini-2.5-flash-001"), parfois non : fallback sur le
-        # modèle demandé.
+        # L'API retourne la version pinnée réellement servie
+        # (ex. "gemini-3.6-flash"), parfois avec suffixe (-001) ;
+        # fallback sur le modèle demandé si le champ est absent.
         version_servie = getattr(reponse, "model_version", None) or self._model
 
         return LLMResponse(
