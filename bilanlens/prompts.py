@@ -29,6 +29,11 @@ import hashlib
 # Regles communes B0 (strict, default) / V1. Passe en `system_instruction`.
 # "Strict" : abstention imperative au moindre doute. Produit un plancher
 # conservateur (voir journal 2026-11-01 : 100 % d'abstention observee).
+#
+# Le texte **ne mentionne plus** le nombre de cles de sortie : le schema
+# JSON (`response_schema` cote API) impose les champs. Mentionner un
+# nombre fixe ici obligerait a reecrire le prompt chaque fois qu'on
+# ajoute un champ (ex. `cited_extraits` en V1).
 SYSTEM_INSTRUCTION = """Tu es un assistant financier. Tu reponds a UNE question sur un
 rapport annuel d'une societe cotee a la BVMT (Bourse de Tunis).
 
@@ -41,9 +46,8 @@ Regles strictes :
 - Ne calcule rien d'approximatif. Pas d'intervalle, pas de "environ".
 - Pas de disclaimers, pas de reformulation de la question.
 
-Sortie : UN seul objet JSON avec DEUX cles :
-  "answer" (string) : ta reponse selon les regles ci-dessus.
-  "confidence" (string) : "high", "medium", "low" ou "unknown".""".strip()
+Sortie : un objet JSON dont la structure est imposee par le schema
+de reponse. Reponds uniquement avec ce JSON, sans texte autour.""".strip()
 
 
 # B0-LIBRE : variante DIAGNOSTIQUE. Pas de consigne d'abstention. Permet
@@ -62,25 +66,30 @@ disposition. Reponds en une phrase courte avec la valeur et son
 unite (ex. "100 836 224 TND", "34,53 %", "diminution de 24 287 937
 TND entre 2023 et 2024").
 
-Sortie : UN seul objet JSON avec DEUX cles :
-  "answer" (string) : ta reponse.
-  "confidence" (string) : "high", "medium", "low" ou "unknown".""".strip()
+Sortie : un objet JSON dont la structure est imposee par le schema
+de reponse. Reponds uniquement avec ce JSON, sans texte autour.""".strip()
 
 
 # B0 : prompt utilisateur = juste la question. Pas de contexte.
 # PARTAGE entre B0-strict et B0-libre : seul le prompt systeme change.
 TEMPLATE_B0_USER = "Question :\n{question}"
 
-# V1 : prompt utilisateur = contexte RAG puis question. L'ordre
-# contexte-avant-question est delibere : le modele voit la matiere
-# avant la demande, comme dans un examen.
+# V1 : prompt utilisateur = contexte RAG + question + consigne de
+# citation. L'ordre contexte-avant-question est delibere : le modele
+# voit la matiere avant la demande, comme dans un examen. La consigne
+# de citation est placee ici (template V1) et PAS dans
+# `SYSTEM_INSTRUCTION`, pour que B0 reste strictement comparable
+# a V1 sur `answer` + `confidence`.
 TEMPLATE_V1_USER = (
     "Contexte (extraits du rapport annuel) :\n{context}"
     "\n\nQuestion :\n{question}"
+    "\n\nDans le champ cited_extraits du JSON, liste les numeros "
+    "d'extraits (1, 2, 3, ...) que tu as reellement utilises pour "
+    "construire ta reponse. Liste vide [] si aucun extrait n'a servi."
 )
 
 
-# Schema de reponse pour `response_mime_type="application/json"` cote
+# Schema de reponse B0 pour `response_mime_type="application/json"` cote
 # Gemini. Les cles JSON Schema supportees par le SDK Gemini sont un
 # sous-ensemble (type, properties, required, enum, propertyOrdering) :
 # pas de $schema, pas de additionalProperties.
@@ -95,6 +104,31 @@ JSON_SCHEMA_REPONSE = {
     },
     "required": ["answer", "confidence"],
     "propertyOrdering": ["answer", "confidence"],
+}
+
+
+# Schema de reponse V1 : B0 + `cited_extraits` (liste d'entiers,
+# positions 1-based des extraits du contexte RAG reellement utilises
+# pour construire la reponse). Pas de pages absolues (page 4 est
+# ambigu quand les extraits viennent de plusieurs entreprises) : on
+# cite par POSITION dans la liste de contexte ; la correspondance
+# (doc, page_physique, chunk_id) vit cote results/*.jsonl via le
+# champ `retrieved`.
+JSON_SCHEMA_REPONSE_V1 = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "confidence": {
+            "type": "string",
+            "enum": ["high", "medium", "low", "unknown"],
+        },
+        "cited_extraits": {
+            "type": "array",
+            "items": {"type": "integer"},
+        },
+    },
+    "required": ["answer", "confidence", "cited_extraits"],
+    "propertyOrdering": ["answer", "confidence", "cited_extraits"],
 }
 
 

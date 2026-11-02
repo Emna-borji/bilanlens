@@ -1372,7 +1372,9 @@ AI Studio de ma clé.
    « retry dans 23 h » sur la 21ᵉ requête : 1 seule nouvelle
    requête avait pu passer en 10 h.
 
-**Bascule validée** vers `gemini-3.5-flash-lite` (500 RPD, 10 RPM) :
+**Bascule validée** vers `gemini-3.5-flash-lite` (quotas issus de
+sources tierces, **non vérifiés dans AI Studio** à cette date :
+~500 RPD, ~10 RPM — à confirmer côté clé) :
 
 - Modèle **stable et pinné** (`client.models.list()` confirme :
   pas de suffixe `preview` ni `exp`).
@@ -1478,7 +1480,7 @@ dans toutes les variantes B0.
 
 | Décision | Justification |
 |---|---|
-| `DEFAULT_MODEL = "gemini-3.5-flash-lite"` | 500 RPD vs 20 RPD, suffisant pour 62 appels |
+| `DEFAULT_MODEL = "gemini-3.5-flash-lite"` | ~500 RPD annoncés par sources tierces (vs 20 RPD vérifié sur 3.6-flash) ; à reconfirmer dans AI Studio |
 | Même modèle B0 et V1 | La différence doit mesurer le RAG, pas un changement de modèle |
 | Variante B0-libre dans le même script via `--variante strict\|libre` | Évite la duplication de `evaluate_b0.py` |
 | Prompt système B0-libre JAMAIS réutilisé pour V1 | V1 reste sous la consigne stricte |
@@ -1518,3 +1520,117 @@ dans toutes les variantes B0.
   (`b0_d1ef73ef27f98dd4` historique incomplet,
   `b0_gemini35flashlite_d1ef73ef27f98dd4` 31/31,
   `b0libre_gemini35flashlite_21c68d1cba543eeb` 31/31).
+
+---
+
+## 2026-11-02 (soir) — Étape 6 V1 : RAG top-k, 31 Q, k=5
+
+### Ce que j'ai fait
+
+- Nouveau script `scripts/evaluate_v1.py` : encodage de la question
+  via `charger_encodeur()` (Gemini embedding-2, task `RETRIEVAL_QUERY`),
+  `collection.query(n_results=k)` sur Chroma, formatage du contexte
+  `=== Extrait N : doc, page X ===` dans l'ordre du rang, appel LLM
+  avec le MÊME `SYSTEM_INSTRUCTION` (strict) que B0 + template V1
+  avec consigne de citation.
+- Schéma JSON V1 à 3 clés : `answer`, `confidence`, `cited_extraits`
+  (positions 1-based dans la liste de contexte, PAS numéros de page
+  absolus car à `k=5` les extraits peuvent venir de plusieurs
+  entreprises).
+- `run_id = v1_<slug>_k<top_k>_<prompt_version>` : `top_k` dans l'ID
+  pour qu'un futur run `--top-k 10` ne soit pas court-circuité par
+  le checkpoint. Vérifié par test unitaire.
+- Nouveau fichier `tests/test_evaluate_v1.py` : 15 tests, LLM/encodeur/
+  collection faux, `FakeEncoder` sous `hashlib.sha256` (pas `hash()`
+  builtin, qui varie entre runs). Fonctions `pages_attendues`,
+  `recall_ok` couvertes.
+- Recall@k mesuré par catégorie : `(doc, page_physique)`. Pour un
+  calcul (`intermediate_values` présents), TOUTES les pages des
+  valeurs intermédiaires doivent être dans le top-k (protocole §3.1).
+- Rejoué `b0_gemini35flashlite_90b019c736aa621c` sur les 26 questions
+  restantes → run B0-strict complet 31/31, cohérent avec le run V1.
+- Supprimé "DEUX cles" du `SYSTEM_INSTRUCTION` : le schéma JSON
+  (`response_schema` API) impose déjà les champs ; mentionner un
+  nombre fixe obligerait à réécrire le prompt à chaque ajout de clé
+  (`cited_extraits` en V1).
+
+### Résultats V1 Flash-Lite k=5 sur 31 questions
+
+| Métrique | V1 (RAG k=5) | B0 strict (plancher) |
+|---|---|---|
+| Chiffrées | 15/31 | 0/31 |
+| « donnée non disponible » | 14/31 (45 %) | 31/31 (100 %) |
+| parse_ok=False | 0 | 0 |
+| citations invalides | 0 | — |
+| latence moyenne | 1,05 s | 0,83 s |
+
+**Recall@5 par catégorie — (doc, page) attendu dans le top-5 :**
+
+| Catégorie | Recall@5 | Note |
+|---|---|---|
+| extraction | 8/9 | la base la plus solide |
+| calcul | 5/7 | 2 calculs échouent recall car page intermédiaire manquante (ex. Q23 ROA : page 4 absente du top-5) |
+| comparaison | 4/6 | |
+| texte_annexes | 2/5 | **le point faible** ; les notes annexes diluent sur plusieurs pages |
+| sans_reponse | n/a | 4 Q, pas de page attendue |
+
+### Points marquants
+
+- **Q10 (monoprix_consolide, calcul 13,03 %)** : page 3 bien
+  récupérée au rang 1 (cited=[1]), mais le modèle calcule
+  `49 423 396 / 299 295 661` (total passif hors capitaux propres)
+  = 16,51 % au lieu de `49 423 396 / 379 260 923` = 13,03 %. **Recall
+  OK, exactitude KO** — l'erreur est sémantique (lecture de « Total
+  passif »), pas documentaire. Motive la mesure séparée recall /
+  exactitude à l'étape 7.
+- **Q23 (ciments_bizerte, ROA 2 pages)** : page 4 (résultat net)
+  absente du top-5, seule page 2 (total actif) remonte → abstention
+  correcte du modèle. **Recall KO** sur un calcul multi-page.
+- **Hallucinations numériques** sans contexte (B0-libre, 4 cas,
+  conf=high) → avec RAG, remplacées soit par abstention soit par
+  réponse citée correcte. Le RAG réduit l'invention en forçant un
+  ancrage textuel.
+
+### Décisions prises
+
+| Décision | Justification |
+|---|---|
+| `cited_extraits` positions 1-based (pas numéros de page absolus) | À k=5 sans filtre, les extraits peuvent venir de plusieurs entreprises : « page 4 » est ambigu |
+| Correspondance (doc, page, chunk_id) dans `results.retrieved`, pas dans la réponse LLM | Sépare ce que le modèle a cité de la vérité technique Chroma |
+| `top_k` dans le `run_id` | Deux runs k=5 vs k=10 doivent cohabiter sans collision de checkpoint |
+| Stocker `retrieved` SANS les textes dans `results/v1.jsonl` | Fichier déjà 150-200 Ko à 5 chunks × 31 Q ; les textes vivent dans Chroma |
+| Mesure Recall@k basée sur `calculation.intermediate_values` quand présent | Protocole §3.1 : TOUTES les pages requises doivent être retrouvées |
+| Même `SYSTEM_INSTRUCTION` strict pour B0 et V1 | La différence doit mesurer l'effet du RAG, pas un changement de consigne |
+
+### Ce que j'ai appris
+
+- **Un bon recall ne garantit pas une bonne réponse.** Q10 est
+  exemplaire : page 3 au rang 1, cité, et pourtant erreur de
+  calcul sémantique (deux « totaux passifs » coexistent sur un bilan
+  consolidé). V2 devra peut-être enrichir le prompt avec la
+  définition pédagogique du cours.
+- **Les notes annexes sont le point faible de l'embedding.** Recall
+  2/5 sur `texte_annexes` : les questions comme « méthode de
+  valorisation des pièces de rechange » matchent faiblement avec
+  les pages d'annexes où l'info est noyée dans du texte long. Une
+  stratégie : sous-découpage par note (NCT X, Note Y) plutôt que
+  par page.
+- **Les calculs multi-page tombent sur le recall, pas sur le LLM.**
+  Q23 ROA : le modèle refuse honnêtement car il ne voit QUE page 2
+  (total actif), pas page 4 (résultat net). Avec k=10, la page 4
+  remonterait sans doute. Compromis à mesurer.
+- **Flash-Lite est-il discipliné en V1 ?** Oui pour les extractions
+  pures (8/9 reconstituées à l'identique, y compris 1 281 772 854,965
+  avec 3 décimales sur SFBT), moins pour les calculs (hallucination
+  numérique Q10 sous contexte correct).
+
+### Fichiers modifiés dans la session
+
+- `bilanlens/prompts.py` : SYSTEM_INSTRUCTION sans « DEUX cles » (B0
+  strict ET libre), TEMPLATE_V1_USER avec consigne cited_extraits,
+  JSON_SCHEMA_REPONSE_V1 (3 clés), `prompt_version_v1()`.
+- `scripts/evaluate_v1.py` : nouveau, 440 lignes.
+- `tests/test_evaluate_v1.py` : nouveau, 15 tests.
+- `tests/test_evaluate_b0.py` : adaptation `test_system_instruction_b0_libre`.
+- `results/b0.jsonl` : run `b0_gemini35flashlite_90b019c736aa621c` complet.
+- `results/v1.jsonl` : run `v1_gemini35flashlite_k5_a3c4180afaeb900e` complet.

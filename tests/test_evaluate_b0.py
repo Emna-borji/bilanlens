@@ -387,9 +387,11 @@ def test_system_instruction_b0_libre_ne_contient_pas_abstention():
     from bilanlens.prompts import SYSTEM_INSTRUCTION_B0_LIBRE
 
     assert "donnee non disponible" not in SYSTEM_INSTRUCTION_B0_LIBRE
-    # Mais le format JSON doit rester identique.
-    assert '"answer"' in SYSTEM_INSTRUCTION_B0_LIBRE
-    assert '"confidence"' in SYSTEM_INSTRUCTION_B0_LIBRE
+    # Le texte renvoie au schema (qui impose les champs), au lieu de
+    # lister les cles "a la main" : evite de reecrire le prompt a
+    # chaque champ ajoute (ex. cited_extraits en V1).
+    assert "schema" in SYSTEM_INSTRUCTION_B0_LIBRE.lower()
+    assert "JSON" in SYSTEM_INSTRUCTION_B0_LIBRE
 
 
 def test_run_id_defaut_variante_libre_a_prefixe_distinct():
