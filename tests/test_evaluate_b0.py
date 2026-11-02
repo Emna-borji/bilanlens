@@ -445,6 +445,86 @@ def test_contient_chiffre_significatif_distingue_annees_et_montants():
     assert not contient_chiffre_significatif("exercice 2023")
 
 
+def test_formater_vraie_reponse_variation_utilise_value_signed():
+    """Les comparaisons (format='variation') n'ont PAS de `value`,
+    mais `value_signed` + `direction` + `percentage`. Le formatter
+    doit les utiliser au lieu de retourner 'N/A'."""
+    from scripts.evaluate_b0 import _formater_vraie_reponse
+
+    bench = {
+        "answer": {
+            "direction": "augmentation",
+            "value_signed": 20625000.0,
+            "value_absolute": 20625000.0,
+            "percentage": 8.33,
+            "unit": "TND",
+            "format": "variation",
+        }
+    }
+    s = _formater_vraie_reponse(bench)
+    assert "augmentation" in s
+    assert "20 625 000" in s
+    assert "TND" in s
+    assert "+8.3" in s or "+8.33" in s
+
+
+def test_formater_vraie_reponse_variation_diminution():
+    """Une diminution : le signe du value_signed est -, le pourcentage
+    est negatif. L'affichage doit refleter les deux."""
+    from scripts.evaluate_b0 import _formater_vraie_reponse
+
+    bench = {
+        "answer": {
+            "direction": "diminution",
+            "value_signed": -24287937,
+            "percentage": -63.6,
+            "unit": "TND",
+            "format": "variation",
+        }
+    }
+    s = _formater_vraie_reponse(bench)
+    assert "diminution" in s
+    # value_signed negatif ne doit pas afficher "+" en prefixe.
+    assert "+-24" not in s
+    assert "-24 287 937" in s or "-24287937" in s
+    assert "-63.6" in s
+
+
+def test_formater_vraie_reponse_texte_annexes():
+    """format='texte' : affiche la value textuelle (tronque a 140 car.)."""
+    from scripts.evaluate_b0 import _formater_vraie_reponse
+
+    bench = {
+        "answer": {
+            "value": "Au cout moyen pondere.",
+            "unit": None,
+            "format": "texte",
+        }
+    }
+    assert _formater_vraie_reponse(bench) == "Au cout moyen pondere."
+
+
+def test_formater_vraie_reponse_extraction_numerique():
+    """format par defaut (extraction) : affiche `{value} {unit}`
+    avec separateurs d'espaces."""
+    from scripts.evaluate_b0 import _formater_vraie_reponse
+
+    bench = {"answer": {"value": 100836224, "unit": "TND"}}
+    assert _formater_vraie_reponse(bench) == "100 836 224 TND"
+
+
+def test_formater_vraie_reponse_pourcentage_calcul():
+    """format='pourcentage' pour les calculs : affiche la value avec %."""
+    from scripts.evaluate_b0 import _formater_vraie_reponse
+
+    bench = {
+        "answer": {"value": 0.93, "unit": "%", "format": "pourcentage"}
+    }
+    s = _formater_vraie_reponse(bench)
+    assert "0.93" in s
+    assert "%" in s
+
+
 def test_est_abstention_large_couvre_reformulations_du_modele():
     """Patterns observes sur B0-libre quand la consigne stricte est absente."""
     from scripts.evaluate_b0 import est_abstention_large

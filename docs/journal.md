@@ -1354,3 +1354,167 @@ figer un choix de modèle pour les runs sérieux :
 
 Décision reportée à la relance de demain, après vérification
 AI Studio de ma clé.
+
+---
+
+## 2026-11-02 — Bascule Flash-Lite + variante B0-libre + mesure hallucination
+
+### Pourquoi la bascule
+
+**`gemini-3.6-flash` plafonne à 20 RPD sur une fenêtre glissante de
+24 h**, pas sur une fenêtre calendaire. Deux conséquences :
+
+1. Pour un benchmark de 31 questions × 2 runs (B0 + V1) = 62 appels
+   LLM minimum, il faut ~75 h sur Flash seul : impraticable.
+2. Le quota se libère **requête par requête** au fur et à mesure
+   que les anciennes sortent de la fenêtre, pas d'un seul coup à
+   minuit. Hier soir j'avais 20/31, ce matin Google m'a dit
+   « retry dans 23 h » sur la 21ᵉ requête : 1 seule nouvelle
+   requête avait pu passer en 10 h.
+
+**Bascule validée** vers `gemini-3.5-flash-lite` (500 RPD, 10 RPM) :
+
+- Modèle **stable et pinné** (`client.models.list()` confirme :
+  pas de suffixe `preview` ni `exp`).
+- Latence **4× plus rapide** que Flash (0,89 s moy vs 4,01 s).
+- **Même modèle pour B0 et V1** : la différence B0 vs V1 doit
+  mesurer l'effet du RAG, pas un changement de modèle. Si on
+  changeait de modèle entre B0 et V1, la comparaison ne vaudrait
+  plus rien.
+
+### Résultats B0-strict Flash-Lite (31/31)
+
+- **100 % de `"donnee non disponible"`** (plancher 0 % de réponses
+  correctes, identique à Flash hier). Confirme que ce n'est pas
+  un biais du modèle : c'est la consigne d'abstention stricte qui
+  domine la décision quel que soit le modèle.
+- 0 `parse_ok=False`, latence moy 0,89 s, 31 lignes propres sous
+  `run_id = b0_gemini35flashlite_d1ef73ef27f98dd4`.
+- Les 20 lignes historiques `gemini-3.6-flash` (incomplet)
+  **préservées** sous l'ancien `run_id` dans le même fichier
+  `results/b0.jsonl` : trois runs coexistent proprement.
+
+### Variante B0-libre (prompt diagnostique sans abstention)
+
+**But** : mesurer la propension du LLM à inventer sans contexte.
+Prompt système séparé (`SYSTEM_INSTRUCTION_B0_LIBRE`) qui retire :
+
+- « Au moindre doute, réponds `donnee non disponible` »
+- « Pas d'approximation, pas d'intervalle, pas d'environ »
+- « Pas de disclaimers »
+
+Mais garde le format JSON `{answer, confidence}` identique.
+
+**V1 reste sous `SYSTEM_INSTRUCTION` strict.** La variante libre
+est cantonnée à cette mesure diagnostique. Nouveau `run_id`
+`b0libre_gemini35flashlite_21c68d1cba543eeb` (prefix `b0libre_`
+pour distinguer, prompt_version différent du strict).
+
+### Résultats B0-libre — ce que le modèle fait sans consigne
+
+Classification affinée après découverte que le modèle reformule
+largement ses refus (« Je ne dispose pas... », « Information non
+disponible dans le contexte », « n'est pas précisée ») :
+
+| Catégorie | N / 31 | Interprétation |
+|---|---|---|
+| **CHIFFRÉE** | 4 (13 %) | nombre ≥ 5 chiffres ou % → potentielle hallucination |
+| **ABSTENTION LARGE** | 24 (77 %) | refus explicite ou reformulé |
+| **AUTRES textuels** | 3 (10 %) | phrase sans chiffre ni abstention (ex. méthode comptable) |
+
+Note empirique sur la classification : le pattern regex
+`n'(?:est|sont) pas` dans `est_abstention_large` est **trop large
+en absolu** (« ce n'est pas déductible » n'est pas une abstention).
+Il tient uniquement parce qu'il est **combiné en ET** avec « pas
+de chiffre significatif » : les deux signaux ensemble sont fiables.
+**Pour le scoring de l'étape 7, cette classification binaire ne
+suffira pas** : il faudra comparer la réponse du modèle à la
+réponse canonique du benchmark (tolérance numérique + similarité
+sémantique pour les textuels), pas s'appuyer sur des regex locales.
+
+### Les 4 hallucinations : signature complète
+
+Toutes les 4 déclarent `confidence: "high"` — **le modèle ne
+distingue pas entre savoir et inventer**.
+
+| ID | Catégorie | Modèle (conf=high) | Benchmark |
+|---|---|---|---|
+| `sotuver_2024_03` | comparaison | « augmentation de 15 282 342 TND » | **diminution** de -24 287 937 TND (-63,6 %) |
+| `monoprix_consolide_2024_11` | comparaison | « augmentation de 15 287 654 TND » | augmentation de +5 859 229 TND (+578 %) |
+| `monoprix_2024_14` | calcul | « rentabilité nette = -5,86 % » | **0,93 %** |
+| `sfbt_2024_20` | comparaison | « 25 000 000 TND par incorporation » | +20 625 000 TND (+8,33 %) |
+
+**Zéro hallucination sur les 5 questions d'extraction testées** —
+le modèle refuse systématiquement. Les hallucinations se
+concentrent sur **comparaison et calcul**, dont le pattern
+syntaxique (« augmentation de X TND », « ratio = Y % ») est
+fréquent dans son training. Face à ces patterns, il génère un
+chiffre « plausible financier » (dizaines de millions de TND)
+par distribution a priori plutôt que par rappel factuel.
+
+Détail troublant sur `monoprix_consolide_2024_11` : la vraie
+variation est **+578 %** (très inhabituel : contexte post-perte).
+Le modèle a eu la direction juste (augmentation) mais a sorti
++15,3 M TND au lieu de +5,9 M. Il calibre les hallucinations sur
+des ordres de grandeur typiques et ignore les ratios atypiques.
+
+### Les 3 autres textuels : hallucinations qualitatives
+
+Tous les 3 déclarent `confidence: "high"` également.
+
+| ID | Modèle | Benchmark |
+|---|---|---|
+| `sotuver_2024_04` | « coût moyen pondéré » | au plus bas du coût de production et de la valeur de réalisation nette |
+| `sotuver_2024_08` | « reclassement des moules... destinés à être utilisés sur plusieurs exercices » | pour mieux refléter la nature durable des moules et aligner le traitement comptable (NCT 11) |
+| `sfbt_2024_21` | « coût d'acquisition majoré des frais accessoires » | au coût moyen pondéré |
+
+**2/3 faux, 1/3 proche sémantiquement** (`sotuver_2024_08` évoque
+bien le reclassement NCT 11). Pas de hasard : le modèle semble
+avoir une mémoire générique du reclassement moules → immobilisations.
+C'est précisément le genre de connaissance *générale* qui va fuir
+dans toutes les variantes B0.
+
+### Décisions prises
+
+| Décision | Justification |
+|---|---|
+| `DEFAULT_MODEL = "gemini-3.5-flash-lite"` | 500 RPD vs 20 RPD, suffisant pour 62 appels |
+| Même modèle B0 et V1 | La différence doit mesurer le RAG, pas un changement de modèle |
+| Variante B0-libre dans le même script via `--variante strict\|libre` | Évite la duplication de `evaluate_b0.py` |
+| Prompt système B0-libre JAMAIS réutilisé pour V1 | V1 reste sous la consigne stricte |
+| Nouveau format `run_id` = `<prefix>_<model_slug>_<prompt_version>` | Trois axes qui changent le résultat doivent être dans l'ID |
+| `confidence` du JSON **inutilisable** comme garde-fou | 4/4 hallucinations + 3/3 autres faux = `conf=high`. Pour la V2, poids `high` à éviter |
+
+### Ce que j'ai appris
+
+- **Un quota glissant n'est pas un quota calendaire.** 20 RPD glissant
+  = 1 requête toutes les ~72 min. Un benchmark de 62 appels prend
+  75 h avec. Lire le `retryDelay` de Google sur un vrai échec est
+  plus informatif que les blogs tiers.
+- **Un prompt système sans consigne d'abstention ne produit pas
+  nécessairement plus d'hallucinations qu'avec.** Flash-Lite libre
+  a quand même refusé 77 % des questions (reformulations). Mais
+  parmi les 23 % de « réponses », 4 sur 7 sont des inventions
+  claires. Taux d'hallucination conditionnel ≈ 57 %.
+- **Le modèle hallucine avec confiance maximale (`high`).** C'est
+  la raison précise pour laquelle on construit un RAG : forcer
+  la citation d'un extrait concret du rapport, qui ne peut pas
+  venir d'un prior sur « augmentation de X TND ».
+- **Les hallucinations numériques sont ciblées par forme de
+  question**, pas par difficulté : les comparaisons et calculs
+  déclenchent des patterns génératifs, pas les extractions pures.
+
+### Fichiers modifiés dans la session (final)
+
+- `bilanlens/llm.py` : `DEFAULT_MODEL = "gemini-3.5-flash-lite"`.
+- `bilanlens/prompts.py` : `SYSTEM_INSTRUCTION_B0_LIBRE` +
+  `prompt_version_b0_strict` + `prompt_version_b0_libre`.
+- `scripts/evaluate_b0.py` : `--variante`, `--model`, `--only`,
+  `slug_modele`, `run_id_defaut`, `contient_chiffre_significatif`,
+  `est_abstention_large`, `_formater_vraie_reponse`,
+  `afficher_stats_libre` (3 sections : extractions, chiffrées, autres).
+- `tests/test_evaluate_b0.py` : +15 tests.
+- `results/b0.jsonl` : 82 lignes au total, 3 runs cohabitants
+  (`b0_d1ef73ef27f98dd4` historique incomplet,
+  `b0_gemini35flashlite_d1ef73ef27f98dd4` 31/31,
+  `b0libre_gemini35flashlite_21c68d1cba543eeb` 31/31).

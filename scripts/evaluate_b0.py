@@ -305,6 +305,50 @@ def est_abstention_large(answer: str) -> bool:
     return False
 
 
+def _formater_vraie_reponse(bench_entry: dict) -> str:
+    """Formate la vraie reponse d'une question du benchmark pour
+    affichage lisible. Gere les 4 formats :
+    - `variation` (comparaison) : `{direction} de {|value_signed|} {unit}`
+    - `pourcentage` / `ratio` (calcul) : `{value} {unit}` avec tolerance
+    - `texte` (texte_annexes) : `{value}` tronque
+    - par defaut (extraction) : `{value} {unit}`.
+    Retourne 'N/A' si rien d'exploitable.
+    """
+    ans = (bench_entry or {}).get("answer") or {}
+    if not ans:
+        return "N/A"
+    fmt = ans.get("format")
+    unit = ans.get("unit") or ""
+
+    if fmt == "variation":
+        direction = ans.get("direction", "variation")
+        val = ans.get("value_signed", ans.get("value_absolute"))
+        pct = ans.get("percentage")
+        if val is None:
+            return "N/A"
+        signe = "+" if (val is not None and val > 0) else ""
+        base = f"{direction} de {signe}{val:,} {unit}".replace(",", " ")
+        if pct is not None:
+            base += f" ({pct:+.1f} %)"
+        return base
+
+    if fmt == "texte":
+        txt = ans.get("value") or ""
+        return txt[:140]
+
+    # Extraction / calcul / defaut.
+    val = ans.get("value")
+    if val is None:
+        return "N/A"
+    if isinstance(val, float) and val.is_integer():
+        val_str = f"{int(val):,}".replace(",", " ")
+    elif isinstance(val, (int, float)):
+        val_str = f"{val:,}".replace(",", " ")
+    else:
+        val_str = str(val)
+    return f"{val_str} {unit}".strip()
+
+
 def afficher_stats_libre(
     path: Path, run_id: str, benchmark: list[dict], nb_extraction: int = 5,
 ) -> None:
@@ -378,13 +422,7 @@ def afficher_stats_libre(
         conf = p.get("confidence", "-")
         qid = ex["question_id"]
         bench_entry = bench_par_id.get(qid) or {}
-        vraie = bench_entry.get("answer") or {}
-        vraie_val = vraie.get("value")
-        vraie_unite = vraie.get("unit") or ""
-        vraie_str = (
-            f"{vraie_val} {vraie_unite}".strip()
-            if vraie_val is not None else "N/A"
-        )
+        vraie_str = _formater_vraie_reponse(bench_entry)
 
         marque = " [CHIFFREE]" if contient_chiffre_significatif(ans_modele) else ""
         print(f"  {qid} [conf={conf}]{marque}")
@@ -394,7 +432,8 @@ def afficher_stats_libre(
 
     # Zoom sur les reponses CHIFFREES toutes categories confondues :
     # c'est la que les hallucinations se cachent (pas sur les extractions
-    # ou le modele refuse largement).
+    # ou le modele refuse largement). Affiche la CONFIDENCE declaree :
+    # est-ce que le modele se dit sur de lui quand il invente ?
     chiffrees = [
         l for l in lignes
         if contient_chiffre_significatif(
@@ -407,18 +446,42 @@ def afficher_stats_libre(
         for ex in chiffrees:
             p = ex.get("answer_parsed") or {}
             ans_modele = p.get("answer", "<parse_ok=False>")
+            conf = p.get("confidence", "-")
             qid = ex["question_id"]
             bench_entry = bench_par_id.get(qid) or {}
             cat = bench_entry.get("category", "-")
-            vraie = bench_entry.get("answer") or {}
-            vraie_val = vraie.get("value")
-            vraie_unite = vraie.get("unit") or ""
-            vraie_str = (
-                f"{vraie_val} {vraie_unite}".strip()
-                if vraie_val is not None else "N/A"
-            )
-            print(f"  {qid} [{cat}]")
+            vraie_str = _formater_vraie_reponse(bench_entry)
+            print(f"  {qid} [{cat}, conf={conf}]")
             print(f"    Modele : {ans_modele[:150]}")
+            print(f"    Vraie  : {vraie_str}")
+
+    # Zoom sur les reponses AUTRES (textuelles) : ni chiffre
+    # significatif, ni abstention. Souvent texte_annexes, parfois
+    # phrase vague. Permet de verifier si le modele tombe juste par
+    # hasard sur une methode comptable classique (ex. "cout moyen
+    # pondere" est tres frequent dans les PCG tunisiens).
+    autres = [
+        l for l in lignes
+        if not contient_chiffre_significatif(
+            (l.get("answer_parsed") or {}).get("answer", "")
+        )
+        and not est_abstention_large(
+            (l.get("answer_parsed") or {}).get("answer", "")
+        )
+    ]
+    if autres:
+        print()
+        print(f"=== {len(autres)} reponses AUTRES (textuelles, non abstentives) ===")
+        for ex in autres:
+            p = ex.get("answer_parsed") or {}
+            ans_modele = p.get("answer", "<parse_ok=False>")
+            conf = p.get("confidence", "-")
+            qid = ex["question_id"]
+            bench_entry = bench_par_id.get(qid) or {}
+            cat = bench_entry.get("category", "-")
+            vraie_str = _formater_vraie_reponse(bench_entry)
+            print(f"  {qid} [{cat}, conf={conf}]")
+            print(f"    Modele : {ans_modele[:200]}")
             print(f"    Vraie  : {vraie_str}")
 
 
