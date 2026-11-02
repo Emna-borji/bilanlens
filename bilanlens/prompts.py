@@ -26,7 +26,9 @@ from __future__ import annotations
 import hashlib
 
 
-# Regles communes B0 / V1. Passe en `system_instruction`.
+# Regles communes B0 (strict, default) / V1. Passe en `system_instruction`.
+# "Strict" : abstention imperative au moindre doute. Produit un plancher
+# conservateur (voir journal 2026-11-01 : 100 % d'abstention observee).
 SYSTEM_INSTRUCTION = """Tu es un assistant financier. Tu reponds a UNE question sur un
 rapport annuel d'une societe cotee a la BVMT (Bourse de Tunis).
 
@@ -44,7 +46,29 @@ Sortie : UN seul objet JSON avec DEUX cles :
   "confidence" (string) : "high", "medium", "low" ou "unknown".""".strip()
 
 
+# B0-LIBRE : variante DIAGNOSTIQUE. Pas de consigne d'abstention. Permet
+# de mesurer la propension du LLM a inventer (hallucination) quand il
+# n'a pas acces aux rapports.
+#
+# **A n'utiliser QUE pour cette variante B0-libre, JAMAIS pour V1.**
+# V1 doit rester sous `SYSTEM_INSTRUCTION` (strict) pour que la
+# difference B0-strict vs V1 mesure l'effet du RAG, pas un changement
+# de consigne.
+SYSTEM_INSTRUCTION_B0_LIBRE = """Tu es un assistant financier. Tu reponds a UNE question sur un
+rapport annuel d'une societe cotee a la BVMT (Bourse de Tunis).
+
+Donne la meilleure reponse que tu peux avec les informations a ta
+disposition. Reponds en une phrase courte avec la valeur et son
+unite (ex. "100 836 224 TND", "34,53 %", "diminution de 24 287 937
+TND entre 2023 et 2024").
+
+Sortie : UN seul objet JSON avec DEUX cles :
+  "answer" (string) : ta reponse.
+  "confidence" (string) : "high", "medium", "low" ou "unknown".""".strip()
+
+
 # B0 : prompt utilisateur = juste la question. Pas de contexte.
+# PARTAGE entre B0-strict et B0-libre : seul le prompt systeme change.
 TEMPLATE_B0_USER = "Question :\n{question}"
 
 # V1 : prompt utilisateur = contexte RAG puis question. L'ordre
@@ -86,10 +110,26 @@ def hash_prompt(system: str, template_user: str) -> str:
 
 
 def prompt_version_b0() -> str:
-    """Hash du prompt B0 (regles communes + template B0)."""
+    """Hash du prompt B0-strict (regles communes + template B0).
+    Alias de `prompt_version_b0_strict()` pour backward compat."""
     return hash_prompt(SYSTEM_INSTRUCTION, TEMPLATE_B0_USER)
 
 
+def prompt_version_b0_strict() -> str:
+    """Hash du prompt B0-strict. Explicite ; prefere a `prompt_version_b0()`
+    quand on veut distinguer B0-strict de B0-libre dans le code."""
+    return hash_prompt(SYSTEM_INSTRUCTION, TEMPLATE_B0_USER)
+
+
+def prompt_version_b0_libre() -> str:
+    """Hash du prompt B0-libre (variante diagnostique, sans abstention).
+    DIFFERENT de `prompt_version_b0_strict()` : garantit que B0-strict
+    et B0-libre vivent sous des run_id distincts dans results/b0.jsonl."""
+    return hash_prompt(SYSTEM_INSTRUCTION_B0_LIBRE, TEMPLATE_B0_USER)
+
+
 def prompt_version_v1() -> str:
-    """Hash du prompt V1 (regles communes + template V1 avec contexte)."""
+    """Hash du prompt V1 (regles communes B0-strict + template V1
+    avec contexte). V1 n'herite PAS de B0-libre : la variante libre
+    reste cantonnee a la mesure d'hallucination."""
     return hash_prompt(SYSTEM_INSTRUCTION, TEMPLATE_V1_USER)

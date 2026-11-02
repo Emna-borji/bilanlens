@@ -72,11 +72,11 @@ class GeminiLLM:
 
     PROVIDER = "gemini"
     # Nom pinne reellement servi par Google (verifie via `model_version`
-    # dans la reponse). L'alias `gemini-3.5-flash` resout vers
-    # `gemini-3.6-flash` depuis l'automne 2026, mais pinner le vrai
-    # nom garantit la reproductibilite : si Google promeut
-    # `gemini-3.8-flash` a l'alias demain, notre code reste identique.
-    DEFAULT_MODEL = "gemini-3.6-flash"
+    # dans la reponse). Choisi 2026-11-02 apres decouverte que
+    # `gemini-3.6-flash` plafonne a 20 RPD glissant sur free tier
+    # (impossible pour un benchmark B0+V1 = 62 appels). Flash-Lite
+    # offre 500 RPD, qualite suffisante pour un plancher sans contexte.
+    DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
     def __init__(self, model: str = DEFAULT_MODEL, api_key: str | None = None):
         load_dotenv()

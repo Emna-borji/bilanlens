@@ -327,3 +327,98 @@ def test_exit_code_quota_journalier_est_2():
     from scripts.evaluate_b0 import EXIT_CODE_QUOTA_JOURNALIER
 
     assert EXIT_CODE_QUOTA_JOURNALIER == 2
+
+
+# ---------------------------------------------------------------------------
+# 8. Slug modele + run_id default (bascule gemini-3.6-flash -> Flash-Lite)
+# ---------------------------------------------------------------------------
+def test_slug_modele_enleve_tirets_et_points():
+    """`gemini-3.5-flash-lite` -> `gemini35flashlite`.
+    Permet d'inclure le nom dans un run_id sans caracteres surprenants."""
+    from scripts.evaluate_b0 import slug_modele
+
+    assert slug_modele("gemini-3.5-flash-lite") == "gemini35flashlite"
+    assert slug_modele("gemini-3.6-flash") == "gemini36flash"
+    # Deja un slug : idempotent.
+    assert slug_modele("gemini35flashlite") == "gemini35flashlite"
+
+
+def test_run_id_defaut_inclut_le_modele():
+    """Deux modeles differents sous le MEME prompt_version doivent
+    produire deux run_id differents : sinon on melangerait leurs
+    reponses dans le meme fichier results."""
+    from scripts.evaluate_b0 import run_id_defaut
+
+    rid_flash = run_id_defaut("gemini-3.6-flash", "abc123")
+    rid_lite = run_id_defaut("gemini-3.5-flash-lite", "abc123")
+    assert rid_flash != rid_lite
+    assert rid_flash == "b0_gemini36flash_abc123"
+    assert rid_lite == "b0_gemini35flashlite_abc123"
+
+
+def test_run_id_defaut_change_quand_prompt_version_change():
+    """Changement de prompt sous le MEME modele -> nouveau run_id
+    (meme garantie que l'ancien default `b0_<prompt_version>`)."""
+    from scripts.evaluate_b0 import run_id_defaut
+
+    rid_v1 = run_id_defaut("gemini-3.5-flash-lite", "aaa")
+    rid_v2 = run_id_defaut("gemini-3.5-flash-lite", "bbb")
+    assert rid_v1 != rid_v2
+
+
+# ---------------------------------------------------------------------------
+# 9. Variante B0-libre (prompt diagnostique sans abstention)
+# ---------------------------------------------------------------------------
+def test_prompt_version_b0_strict_et_libre_different():
+    """Les deux variantes DOIVENT produire des hash differents : si
+    elles sont egaux, un run libre et un run strict partageraient le
+    meme run_id par defaut et melangeraient leurs reponses."""
+    from bilanlens.prompts import (
+        prompt_version_b0_libre,
+        prompt_version_b0_strict,
+    )
+
+    assert prompt_version_b0_strict() != prompt_version_b0_libre()
+
+
+def test_system_instruction_b0_libre_ne_contient_pas_abstention():
+    """La variante libre doit ETRE DEBARRASSEE de la consigne
+    d'abstention. Si demain quelqu'un la reintroduit, ce test tombe."""
+    from bilanlens.prompts import SYSTEM_INSTRUCTION_B0_LIBRE
+
+    assert "donnee non disponible" not in SYSTEM_INSTRUCTION_B0_LIBRE
+    # Mais le format JSON doit rester identique.
+    assert '"answer"' in SYSTEM_INSTRUCTION_B0_LIBRE
+    assert '"confidence"' in SYSTEM_INSTRUCTION_B0_LIBRE
+
+
+def test_run_id_defaut_variante_libre_a_prefixe_distinct():
+    """`strict` -> `b0_...`, `libre` -> `b0libre_...`. Sous le MEME
+    modele et le MEME prompt_version, les deux ne doivent PAS collisionner."""
+    from scripts.evaluate_b0 import run_id_defaut
+
+    rid_strict = run_id_defaut("gemini-3.5-flash-lite", "abc", "strict")
+    rid_libre = run_id_defaut("gemini-3.5-flash-lite", "abc", "libre")
+    assert rid_strict.startswith("b0_")
+    assert rid_libre.startswith("b0libre_")
+    assert rid_strict != rid_libre
+
+
+def test_est_reponse_abstentive_cas_classiques():
+    """Robuste aux variantes typographiques courantes."""
+    from scripts.evaluate_b0 import est_reponse_abstentive
+
+    # Cas franchement abstentifs.
+    assert est_reponse_abstentive("donnee non disponible")
+    assert est_reponse_abstentive("Donnee non disponible")
+    assert est_reponse_abstentive("donnée non disponible")
+    assert est_reponse_abstentive('"donnee non disponible"')
+    assert est_reponse_abstentive("donnee non disponible.")
+    assert est_reponse_abstentive("")
+    # Cas chiffres (pas abstentifs).
+    assert not est_reponse_abstentive("100 836 224 TND")
+    assert not est_reponse_abstentive("34,53 %")
+    # Phrase contenant mais pas uniquement l'abstention.
+    assert not est_reponse_abstentive(
+        "La donnee non disponible dans le rapport est le CA 2024."
+    )

@@ -40,13 +40,51 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(RACINE / ".env")
 
-from bilanlens.llm import ErreurQuotaJournalier, creer_llm  # noqa: E402
+from bilanlens.llm import ErreurQuotaJournalier, GeminiLLM, creer_llm  # noqa: E402
 from bilanlens.prompts import (  # noqa: E402
     JSON_SCHEMA_REPONSE,
     SYSTEM_INSTRUCTION,
+    SYSTEM_INSTRUCTION_B0_LIBRE,
     TEMPLATE_B0_USER,
-    prompt_version_b0,
+    prompt_version_b0_libre,
+    prompt_version_b0_strict,
 )
+
+# Dispatch par variante. Le script accepte `--variante strict|libre` :
+# le prompt systeme et le prompt_version en dependent. Le template
+# utilisateur (`TEMPLATE_B0_USER`) est partage : seule la consigne
+# change entre les deux variantes.
+VARIANTES = {
+    "strict": {
+        "system": SYSTEM_INSTRUCTION,
+        "prompt_version_fn": prompt_version_b0_strict,
+        "run_id_prefix": "b0",
+    },
+    "libre": {
+        "system": SYSTEM_INSTRUCTION_B0_LIBRE,
+        "prompt_version_fn": prompt_version_b0_libre,
+        "run_id_prefix": "b0libre",
+    },
+}
+
+
+def slug_modele(nom: str) -> str:
+    """Enleve tirets et points pour inclure un modele dans un run_id
+    sans ambiguite. `gemini-3.5-flash-lite` -> `gemini35flashlite`."""
+    return nom.replace("-", "").replace(".", "")
+
+
+def run_id_defaut(
+    model: str, prompt_version: str, variante: str = "strict",
+) -> str:
+    """Default `run_id` : `<prefix>_<model_slug>_<prompt_version>`.
+
+    Le prefixe depend de la variante (`b0` ou `b0libre`). Melanger deux
+    variantes dans un meme run casserait les mesures : variante fait
+    partie du run_id.
+    """
+    prefix = VARIANTES[variante]["run_id_prefix"]
+    return f"{prefix}_{slug_modele(model)}_{prompt_version}"
 
 # Code de sortie dedie au quota journalier (RPD) : permet a un wrapper
 # CI de distinguer "quota journalier -> relancer demain" d'une erreur
@@ -99,12 +137,18 @@ def parser_reponse(texte_brut: str) -> tuple[dict | None, bool]:
     return parsed, True
 
 
-def generer_reponse_b0(llm, question_texte: str):
-    """Appelle le LLM avec le prompt B0. Retourne un `LLMResponse`."""
+def generer_reponse_b0(
+    llm, question_texte: str, system: str = SYSTEM_INSTRUCTION,
+):
+    """Appelle le LLM avec le prompt B0. Retourne un `LLMResponse`.
+
+    `system` est optionnel pour backward compat : default = la consigne
+    B0-strict. Pour la variante B0-libre, passer `SYSTEM_INSTRUCTION_B0_LIBRE`.
+    """
     prompt_user = TEMPLATE_B0_USER.format(question=question_texte)
     return llm.generate(
         prompt=prompt_user,
-        system=SYSTEM_INSTRUCTION,
+        system=system,
         temperature=0.0,
         response_schema=JSON_SCHEMA_REPONSE,
     )
@@ -178,6 +222,93 @@ def _formater_octets(n: int) -> str:
     return f"{n:.1f} Mo"
 
 
+def est_reponse_abstentive(answer: str) -> bool:
+    """`True` si la reponse exprime une abstention ("donnee non disponible"
+    ou variante tolerante aux accents/majuscules)."""
+    if not answer:
+        return True
+    norm = answer.strip().lower()
+    # Tolere "donnee" / "donnée" ; retire les points et guillemets
+    # eventuels. Match uniquement si c'est la reponse entiere, pas
+    # une mention dans une phrase longue ("La donnee n'est pas...").
+    norm = norm.rstrip(".").strip('"\' ')
+    return norm.replace("é", "e") == "donnee non disponible"
+
+
+def afficher_stats_libre(
+    path: Path, run_id: str, benchmark: list[dict], nb_extraction: int = 5,
+) -> None:
+    """Stats specifiques B0-libre : nb reponses chiffrees (non
+    abstentives) et tableau comparatif modele vs benchmark pour les
+    `nb_extraction` premieres questions d'extraction (pour voir si
+    le modele invente)."""
+    if not path.exists():
+        print(f"Fichier absent : {path}")
+        return
+    lignes = []
+    with path.open(encoding="utf-8") as f:
+        for ligne in f:
+            try:
+                rec = json.loads(ligne)
+                if rec.get("run_id") == run_id:
+                    lignes.append(rec)
+            except json.JSONDecodeError:
+                continue
+    if not lignes:
+        print(f"Aucune ligne pour run_id={run_id} dans {path.name}.")
+        return
+
+    n = len(lignes)
+    answers = [
+        (l.get("answer_parsed") or {}).get("answer", "") for l in lignes
+    ]
+    nb_chiffrees = sum(1 for a in answers if not est_reponse_abstentive(a))
+    nb_parse_ko = sum(1 for l in lignes if not l.get("parse_ok"))
+    latence_moy = sum(l["latency_s"] for l in lignes) / n
+
+    print()
+    print("=== Resume B0-LIBRE (variante diagnostique) ===")
+    print(f"  run_id              : {run_id}")
+    print(f"  prompt_version      : {lignes[0].get('prompt_version')}")
+    print(f"  modele              : {lignes[0].get('model')}")
+    print(f"  questions traitees  : {n}")
+    print(f"  reponses CHIFFREES  : {nb_chiffrees}/{n} "
+          f"({100*nb_chiffrees/n:.0f} %)")
+    print(f"  reponses abstention : {n - nb_chiffrees}/{n}")
+    print(f"  parse_ok=False      : {nb_parse_ko}")
+    print(f"  latence moyenne     : {latence_moy:.2f} s")
+
+    # Index benchmark par id pour recuperer la vraie reponse attendue.
+    bench_par_id = {q["id"]: q for q in benchmark}
+    # Prendre les N premieres questions d'extraction du run, dans
+    # l'ordre du fichier.
+    extractions = [
+        l for l in lignes
+        if (bench_par_id.get(l["question_id"]) or {}).get("category") == "extraction"
+    ][:nb_extraction]
+
+    print()
+    print(f"=== {len(extractions)} extractions : modele vs benchmark ===")
+    for ex in extractions:
+        p = ex.get("answer_parsed") or {}
+        ans_modele = p.get("answer", "<parse_ok=False>")
+        conf = p.get("confidence", "-")
+        qid = ex["question_id"]
+        bench_entry = bench_par_id.get(qid) or {}
+        vraie = bench_entry.get("answer") or {}
+        vraie_val = vraie.get("value")
+        vraie_unite = vraie.get("unit") or ""
+        vraie_str = (
+            f"{vraie_val} {vraie_unite}".strip()
+            if vraie_val is not None else "N/A"
+        )
+
+        print(f"  {qid} [conf={conf}]")
+        print(f"    Q       : {ex['question'][:110]}")
+        print(f"    Modele  : {ans_modele[:150]}")
+        print(f"    Vraie   : {vraie_str}")
+
+
 def afficher_stats(path: Path, run_id: str) -> None:
     """Affiche stats et 5 exemples (Q01 + une sans_reponse + 3 autres)."""
     if not path.exists():
@@ -236,10 +367,31 @@ def afficher_stats(path: Path, run_id: str) -> None:
 def main() -> int:
     parseur = argparse.ArgumentParser(description="Baseline B0 (LLM seul).")
     parseur.add_argument(
-        "--run-id",
-        default=f"b0_{prompt_version_b0()}",
-        help="Identifiant du run. Default : b0_<prompt_version>. "
-             "Changer le run_id force a retraiter toutes les questions.",
+        "--variante", choices=["strict", "libre"], default="strict",
+        help="`strict` (default) : prompt avec consigne d'abstention au "
+             "moindre doute (plancher conservateur). `libre` : variante "
+             "DIAGNOSTIQUE, pas de consigne d'abstention, pour mesurer "
+             "les hallucinations. JAMAIS utilisee pour V1.",
+    )
+    parseur.add_argument(
+        "--model", default=GeminiLLM.DEFAULT_MODEL,
+        help=f"Nom pinne du modele LLM. Default : {GeminiLLM.DEFAULT_MODEL}. "
+             f"Le modele fait partie du run_id : changer de modele cree "
+             f"automatiquement un nouveau run (les anciennes reponses du "
+             f"precedent restent dans results/b0.jsonl, non reutilisees).",
+    )
+    parseur.add_argument(
+        "--run-id", default=None,
+        help="Identifiant du run. Default calcule : "
+             "<b0|b0libre>_<model_slug>_<prompt_version>. Forcer un "
+             "run_id ne doit se faire que pour reprendre un run "
+             "interrompu avec le MEME modele + MEME variante.",
+    )
+    parseur.add_argument(
+        "--only", default=None,
+        help="Liste d'IDs de questions a traiter, separes par virgule "
+             "(ex. 'sotuver_2024_01,sotuver_2024_05'). Default : "
+             "toutes les questions du benchmark.",
     )
     parseur.add_argument(
         "--interval-s", type=float, default=7.0,
@@ -247,19 +399,38 @@ def main() -> int:
     )
     args = parseur.parse_args()
 
-    run_id = args.run_id
-    prompt_version = prompt_version_b0()
+    variante = args.variante
+    system_prompt = VARIANTES[variante]["system"]
+    model = args.model
+    prompt_version = VARIANTES[variante]["prompt_version_fn"]()
+    run_id = args.run_id or run_id_defaut(model, prompt_version, variante)
 
     print(f"=== B0 : evaluation LLM seul ===")
+    print(f"  variante       : {variante}")
+    print(f"  model          : {model}")
     print(f"  run_id         : {run_id}")
     print(f"  prompt_version : {prompt_version}")
     print(f"  interval       : {args.interval_s} s entre appels")
     print(f"  benchmark      : {BENCH_PATH.relative_to(RACINE)}")
     print(f"  resultats      : {RESULTS_PATH.relative_to(RACINE)}")
+    if args.only:
+        print(f"  --only         : {args.only}")
     print()
 
     questions = charger_benchmark(BENCH_PATH)
     print(f"Questions chargees : {len(questions)}")
+
+    # Filtrage par --only (applique AVANT le checkpoint pour que les
+    # messages "deja faits" ne mentionnent que le sous-ensemble).
+    if args.only:
+        ids_cibles = {s.strip() for s in args.only.split(",") if s.strip()}
+        ids_benchmark = {q["id"] for q in questions}
+        ids_inconnus = ids_cibles - ids_benchmark
+        if ids_inconnus:
+            print(f"ERREUR : IDs inconnus dans --only : {sorted(ids_inconnus)}")
+            return 1
+        questions = [q for q in questions if q["id"] in ids_cibles]
+        print(f"Apres filtrage --only : {len(questions)}")
 
     deja_faits = lire_checkpoint(RESULTS_PATH, run_id)
     a_faire = [q for q in questions if q["id"] not in deja_faits]
@@ -267,14 +438,19 @@ def main() -> int:
     print(f"A traiter : {len(a_faire)}")
     if not a_faire:
         print("Rien a faire. Affichage des stats du run existant.")
-        afficher_stats(RESULTS_PATH, run_id)
+        if variante == "libre":
+            afficher_stats_libre(
+                RESULTS_PATH, run_id, charger_benchmark(BENCH_PATH),
+            )
+        else:
+            afficher_stats(RESULTS_PATH, run_id)
         return 0
 
     duree_est = len(a_faire) * (args.interval_s + 2)  # ~2 s de latence
     print(f"Duree estimee : ~{int(duree_est // 60)} min {int(duree_est % 60)} s")
     print()
 
-    llm = creer_llm(provider="gemini")
+    llm = creer_llm(provider="gemini", model=model)
 
     # Total global (sur le benchmark complet) pour un message d'arret
     # lisible : "18/31 faits" plutot que "11/13 restantes faites".
@@ -284,7 +460,7 @@ def main() -> int:
     for i, q in enumerate(a_faire, start=1):
         print(f"[{i}/{len(a_faire)}] {q['id']} ({q.get('category', '-')})")
         try:
-            reponse = generer_reponse_b0(llm, q["question"])
+            reponse = generer_reponse_b0(llm, q["question"], system=system_prompt)
         except ErreurQuotaJournalier as exc:
             # Pas de backoff : attendre 15 h en boucle n'a aucun sens.
             # Checkpoint deja a jour (append-only JSONL).
@@ -309,7 +485,13 @@ def main() -> int:
         if i < len(a_faire):
             time.sleep(args.interval_s)
 
-    afficher_stats(RESULTS_PATH, run_id)
+    if variante == "libre":
+        # Charger le benchmark complet (meme si --only a filtre) pour
+        # retrouver les vraies valeurs via `question_id`.
+        benchmark_complet = charger_benchmark(BENCH_PATH)
+        afficher_stats_libre(RESULTS_PATH, run_id, benchmark_complet)
+    else:
+        afficher_stats(RESULTS_PATH, run_id)
     return 0
 
 
