@@ -222,9 +222,13 @@ def _formater_octets(n: int) -> str:
     return f"{n:.1f} Mo"
 
 
+import re as _re
+
+
 def est_reponse_abstentive(answer: str) -> bool:
     """`True` si la reponse exprime une abstention ("donnee non disponible"
-    ou variante tolerante aux accents/majuscules)."""
+    exact, ou variante tolerante aux accents/majuscules). Utilise par
+    le B0-strict pour compter les refus imposes par la consigne."""
     if not answer:
         return True
     norm = answer.strip().lower()
@@ -233,6 +237,72 @@ def est_reponse_abstentive(answer: str) -> bool:
     # une mention dans une phrase longue ("La donnee n'est pas...").
     norm = norm.rstrip(".").strip('"\' ')
     return norm.replace("é", "e") == "donnee non disponible"
+
+
+# Patterns observes empiriquement dans les abstentions reformulees du
+# modele quand la consigne stricte est absente (B0-libre).
+_PATTERNS_ABSTENTION_LARGE = [
+    _re.compile(r"je ne dispose pas", _re.IGNORECASE),
+    _re.compile(r"information(s)? non disponible", _re.IGNORECASE),
+    _re.compile(r"n'est pas disponible", _re.IGNORECASE),
+    _re.compile(r"n'est pas pr[eé]cis", _re.IGNORECASE),
+    _re.compile(r"ne (?:sont|est) pas (?:disponible|pr[eé]cis)", _re.IGNORECASE),
+    _re.compile(r"ne permettent? pas de", _re.IGNORECASE),
+    _re.compile(r"non (?:disponible|pr[eé]cis(?:e|ee)?) dans", _re.IGNORECASE),
+    _re.compile(r"ne concerne pas", _re.IGNORECASE),
+    _re.compile(r"n'(?:est|sont) pas", _re.IGNORECASE),
+    _re.compile(r"not available", _re.IGNORECASE),
+]
+
+
+def _nombre_max_chiffres_consecutifs(texte: str) -> int:
+    r"""Nombre max de chiffres dans une sequence `\d[\d\s,.]*\d`
+    (apres suppression des separateurs). Permet de distinguer un
+    montant financier d'une annee isolee."""
+    max_len = 0
+    for grp in _re.findall(r"\d[\d\s,.]*\d", texte):
+        chiffres = _re.sub(r"\D", "", grp)
+        if len(chiffres) > max_len:
+            max_len = len(chiffres)
+    # Un nombre isole d'un seul chiffre (ex. "5") n'est pas capture
+    # par le motif ci-dessus (il demande >=2 chiffres encadrant la
+    # sequence) ; traite ce cas separement.
+    if max_len == 0 and _re.search(r"\d", texte):
+        max_len = 1
+    return max_len
+
+
+def contient_chiffre_significatif(answer: str) -> bool:
+    """`True` si la reponse contient une valeur chiffree exploitable :
+    - un nombre >= 5 chiffres (ex. "100 836 224"), OU
+    - un pourcentage (ex. "34,53 %", "-5,86%").
+
+    Exclut les annees isolees type "2024" (4 chiffres), les numeros
+    de section ("B.9", "p.14") et les refus avec date type
+    "exercice clos le 31 decembre 2024".
+    """
+    if not answer:
+        return False
+    # Pourcentage.
+    if _re.search(r"\d+(?:[.,]\d+)?\s*%", answer):
+        return True
+    # Nombre >= 5 chiffres (apres suppression des separateurs).
+    return _nombre_max_chiffres_consecutifs(answer) >= 5
+
+
+def est_abstention_large(answer: str) -> bool:
+    """`True` si la reponse exprime un refus de repondre, exact ou
+    reformule. Utilise par B0-libre pour distinguer les reponses
+    chiffrees (potentielles hallucinations) des abstentions implicites.
+    """
+    if est_reponse_abstentive(answer):
+        return True
+    if not answer:
+        return True
+    for pat in _PATTERNS_ABSTENTION_LARGE:
+        if pat.search(answer):
+            return True
+    return False
 
 
 def afficher_stats_libre(
@@ -262,7 +332,17 @@ def afficher_stats_libre(
     answers = [
         (l.get("answer_parsed") or {}).get("answer", "") for l in lignes
     ]
-    nb_chiffrees = sum(1 for a in answers if not est_reponse_abstentive(a))
+    # Trois categories mutuellement exclusives :
+    # - CHIFFREE   : contient un nombre significatif (>= 5 chiffres ou %)
+    # - ABSTENTION : refus explicite ou reformule ("je ne dispose pas", etc.)
+    # - AUTRE      : phrase sans chiffre significatif ni pattern d'abstention
+    #               (ex. reponse textuelle qualitative, methode comptable).
+    nb_chiffrees = sum(1 for a in answers if contient_chiffre_significatif(a))
+    nb_abstention = sum(
+        1 for a in answers
+        if not contient_chiffre_significatif(a) and est_abstention_large(a)
+    )
+    nb_autre = n - nb_chiffrees - nb_abstention
     nb_parse_ko = sum(1 for l in lignes if not l.get("parse_ok"))
     latence_moy = sum(l["latency_s"] for l in lignes) / n
 
@@ -273,8 +353,11 @@ def afficher_stats_libre(
     print(f"  modele              : {lignes[0].get('model')}")
     print(f"  questions traitees  : {n}")
     print(f"  reponses CHIFFREES  : {nb_chiffrees}/{n} "
-          f"({100*nb_chiffrees/n:.0f} %)")
-    print(f"  reponses abstention : {n - nb_chiffrees}/{n}")
+          f"({100*nb_chiffrees/n:.0f} %)  <- potentielles hallucinations")
+    print(f"  abstentions (large) : {nb_abstention}/{n} "
+          f"({100*nb_abstention/n:.0f} %)")
+    print(f"  autres (textuel)    : {nb_autre}/{n} "
+          f"({100*nb_autre/n:.0f} %)")
     print(f"  parse_ok=False      : {nb_parse_ko}")
     print(f"  latence moyenne     : {latence_moy:.2f} s")
 
@@ -303,10 +386,40 @@ def afficher_stats_libre(
             if vraie_val is not None else "N/A"
         )
 
-        print(f"  {qid} [conf={conf}]")
+        marque = " [CHIFFREE]" if contient_chiffre_significatif(ans_modele) else ""
+        print(f"  {qid} [conf={conf}]{marque}")
         print(f"    Q       : {ex['question'][:110]}")
         print(f"    Modele  : {ans_modele[:150]}")
         print(f"    Vraie   : {vraie_str}")
+
+    # Zoom sur les reponses CHIFFREES toutes categories confondues :
+    # c'est la que les hallucinations se cachent (pas sur les extractions
+    # ou le modele refuse largement).
+    chiffrees = [
+        l for l in lignes
+        if contient_chiffre_significatif(
+            (l.get("answer_parsed") or {}).get("answer", "")
+        )
+    ]
+    if chiffrees:
+        print()
+        print(f"=== {len(chiffrees)} reponses CHIFFREES (toutes categories) ===")
+        for ex in chiffrees:
+            p = ex.get("answer_parsed") or {}
+            ans_modele = p.get("answer", "<parse_ok=False>")
+            qid = ex["question_id"]
+            bench_entry = bench_par_id.get(qid) or {}
+            cat = bench_entry.get("category", "-")
+            vraie = bench_entry.get("answer") or {}
+            vraie_val = vraie.get("value")
+            vraie_unite = vraie.get("unit") or ""
+            vraie_str = (
+                f"{vraie_val} {vraie_unite}".strip()
+                if vraie_val is not None else "N/A"
+            )
+            print(f"  {qid} [{cat}]")
+            print(f"    Modele : {ans_modele[:150]}")
+            print(f"    Vraie  : {vraie_str}")
 
 
 def afficher_stats(path: Path, run_id: str) -> None:

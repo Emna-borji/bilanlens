@@ -422,3 +422,43 @@ def test_est_reponse_abstentive_cas_classiques():
     assert not est_reponse_abstentive(
         "La donnee non disponible dans le rapport est le CA 2024."
     )
+
+
+def test_contient_chiffre_significatif_distingue_annees_et_montants():
+    """Un montant financier >= 5 chiffres compte, pas une annee isolee."""
+    from scripts.evaluate_b0 import contient_chiffre_significatif
+
+    # Vrais chiffres financiers.
+    assert contient_chiffre_significatif("100 836 224 TND")
+    assert contient_chiffre_significatif("-44 790 355")
+    assert contient_chiffre_significatif("34,53 %")
+    assert contient_chiffre_significatif("-5,86 %")
+    assert contient_chiffre_significatif("1281772854.965 TND")
+    # Faux positifs ecartes.
+    assert not contient_chiffre_significatif(
+        "Je ne dispose pas de l'information pour l'exercice 2024."
+    )
+    assert not contient_chiffre_significatif("")
+    assert not contient_chiffre_significatif(
+        "Information disponible page 14, section B.9."
+    )  # "14" + "9" = < 5 chiffres consecutifs
+    assert not contient_chiffre_significatif("exercice 2023")
+
+
+def test_est_abstention_large_couvre_reformulations_du_modele():
+    """Patterns observes sur B0-libre quand la consigne stricte est absente."""
+    from scripts.evaluate_b0 import est_abstention_large
+
+    # Reformulations du modele.
+    assert est_abstention_large("Je ne dispose pas de l'information.")
+    assert est_abstention_large("Information non disponible dans le contexte.")
+    assert est_abstention_large(
+        "Les informations disponibles ne permettent pas de calculer."
+    )
+    assert est_abstention_large("La capacite n'est pas precisee.")
+    assert est_abstention_large("La part de marche n'est pas disponible.")
+    # Match strict "donnee non disponible" aussi.
+    assert est_abstention_large("donnee non disponible")
+    # Pas abstention : contient une vraie reponse.
+    assert not est_abstention_large("Le CA s'eleve a 100 836 224 TND.")
+    assert not est_abstention_large("La methode est le cout d'acquisition.")
