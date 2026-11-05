@@ -1111,8 +1111,8 @@ def mode_compare(questions: list[dict]) -> int:
     print()
     print(f"  (Point distinct) Justes malgre recall@5 KO strict "
           f"({len(diag['juste_malgre_recall_ko'])}) : page attendue "
-          f"absente mais valeurs lues dans le top-5 via meme page "
-          f"(multi-colonnes)")
+          f"absente mais valeurs lues dans le top-5 sur une AUTRE "
+          f"page que la page attendue")
     print(f"    {sorted(diag['juste_malgre_recall_ko'])}")
 
     # SVG.

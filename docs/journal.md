@@ -1753,8 +1753,9 @@ False=1 (Q30), N/A=9 (5 texte_annexes + 4 sans_reponse).
 
 - **La métrique Recall@k seule ne suffit pas.** Deux Q
   (Q07, Q20) ont recall@5 KO strict mais `valeurs_dans_
-  contexte=True` et le modèle y répond juste (comparaisons avec
-  2 valeurs sur la même page via multi-colonnes). Deux autres
+  contexte=True` et le modèle y répond juste : les valeurs sont
+  lues sur une AUTRE page que la page attendue (Q07 : p. 2 au
+  lieu de p. 9 ; Q20 : p. 17-18 au lieu de p. 3). Deux autres
   (Q23, Q28) ont le même profil mais s'abstiennent. Une
   question (Q30) a recall KO ET valeurs absentes. Trois
   comportements distincts derrière « recall@5 KO ».
@@ -1883,31 +1884,36 @@ absentes du top-5. À traiter en V2 côté retrieval :
 `ciments_bizerte_2024_25`, `delice_holding_2024_30`.
 
 **(b) Abstentions avec valeurs présentes dans le top-5 (6)**
-— le modèle a la matière mais refuse. À traiter en V2 côté
-prompt / formule du cours :
+— le modèle a la matière mais refuse. **Toutes les 6 sont
+des calculs** (Q02, Q06, Q14, Q19, Q23, Q28). Détail recall :
 - recall@5 OK : `sotuver_2024_02`, `sotuver_2024_06`,
   `monoprix_2024_14`, `sfbt_2024_19`.
-- recall@5 KO strict mais valeurs dans contexte via **page
-  alternative** : `ciments_bizerte_2024_23`,
-  `delice_holding_2024_28`.
-- **Hypothèse à tester (pas un fait) pour Q23 et Q28** :
-  Flash-Lite pourrait ne pas reconnaître la valeur sous un
-  libellé différent (Q23 : « RESULTAT COMPTABLE APRES IMPÔTS »
-  page 52 au lieu de « Résultat net de l'exercice » page 4).
-  La confirmation demanderait soit un rerun avec prompt
-  pédagogique explicitant les alias, soit une analyse par
-  attention des chunks cités.
+- recall@5 KO strict mais valeurs dans contexte via une
+  **autre page que la page attendue** : `ciments_bizerte_
+  2024_23` (résultat net aussi en p. 3 « Résultat de l'exercice »
+  au rang 2, ET en p. 52 « Résultat comptable après impôts »
+  au rang 4) ; `delice_holding_2024_28` (résultat net aussi
+  en p. 10 au rang 3). **La cause de l'abstention reste
+  inconnue** : le modèle a plusieurs instances de la valeur
+  dans son contexte, sous des libellés variés. **Piste
+  principale à tester en V2** : la consigne stricte
+  (« donnée non disponible » au moindre doute) ou le
+  passage au calcul numérique bloquent plus que la
+  reconnaissance de libellé — les 6 cas sont tous des
+  calculs, aucun simple extraction.
 
 **(c) Réponse fausse (1)** — `monoprix_consolide_2024_10` :
 recall OK, valeurs dans contexte, mais calcul sémantique
 faux (16,51 % au lieu de 13,03 %).
 
 **Point distinct (pas un échec) : justes malgré recall@5 KO
-(2)** — `sotuver_2024_07`, `sfbt_2024_20`. Comparaisons où
-les 2 valeurs vivent sur la même page via plusieurs colonnes.
-Important pour la calibration : Recall@k en couple
-(doc, page) est un proxy imparfait de la qualité quand les
-valeurs sont co-localisées.
+(2)** — `sotuver_2024_07`, `sfbt_2024_20`. Les valeurs sont
+lues sur une **autre page que la page attendue** : Q07 trouve
+ses 2 valeurs en p. 2 (au lieu de p. 9 attendue), Q20 en
+p. 17-18 (au lieu de p. 3 attendue). Important pour la
+calibration : Recall@k par couple (doc, page) est un proxy
+imparfait de la qualité quand la même ligne du bilan apparaît
+sur plusieurs pages.
 
 ### Décisions prises
 
@@ -1926,8 +1932,8 @@ valeurs sont co-localisées.
   16 justes / 1 fausse en V1. C'est la seule paire qui isole
   rigoureusement l'effet du RAG (B0-libre a un prompt différent,
   à ne pas comparer directement). La réponse juste B0-libre
-  (Q08) est du pur hasard pré-entraînement : « aucune source »
-  noté dans l'annotation.
+  (Q08) ne prouve aucune maîtrise du corpus : « aucune source »
+  noté dans l'annotation, le modèle n'a pas consulté le rapport.
 - **Le prompt système change le mode d'échec, pas la justesse.**
   B0-strict s'abstient partout (sauf sans_reponse), B0-libre
   invente 6 fois et s'abstient 20 fois.
@@ -1937,9 +1943,32 @@ valeurs sont co-localisées.
   demande une V2 différente ; Q07 et Q20 sont justes malgré
   recall@5 KO strict et ne comptent pas dans les échecs.
 - **Les pseudo-abstentions sont un piège méthodologique.** Sans
-  le filtre « pas de chiffre significatif », Q10 (`16,51 %, ...
-  mais pas disponible`) aurait pu être reclassée abstention au
-  lieu de `fausse_recall_ok`.
+  le filtre « pas de chiffre significatif », une réponse
+  chiffrée qui contient aussi un pattern d'abstention en
+  surplus pourrait être reclassée à tort en abstention. Le
+  filtre évite cette confusion. (Q10 réelle = `16,51 %`, pas
+  concernée ici — c'est l'exemple générique qui motive le
+  filtre.)
+
+### Expérience proposée pour la V2 (pas lancée ici)
+
+Les 6 Q `abstention_a_tort` avec valeurs présentes sont **toutes
+des calculs**. Une seule variable à manipuler, tout le reste
+constant, pour tester la piste « consigne prudente bloque les
+calculs » :
+
+- **Même benchmark** (31 Q).
+- **Mêmes chunks V1** (top-5 Chroma déjà enregistrés dans
+  `results/v1.jsonl`, pas de relance retrieval).
+- **Modifier UNE consigne** du `SYSTEM_INSTRUCTION` : assouplir
+  « abstention au moindre doute » en « quand les valeurs
+  nécessaires sont visibles dans le contexte, faire le calcul
+  explicitement avant de conclure ».
+- **Mesurer sur les 7 calculs** (6 abstentions + Q10) comment
+  la répartition `juste` / `abstention_a_tort` / `fausse` bouge.
+
+Cette expérience distingue l'hypothèse « consigne trop prudente »
+de l'hypothèse « capacité limite du modèle sur les calculs ».
 
 ### Fichiers modifiés dans la session
 
