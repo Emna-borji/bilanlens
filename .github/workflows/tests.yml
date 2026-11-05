@@ -7,7 +7,10 @@ on:
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    # Pin Ubuntu 24.04 (noble) : depuis 2026-10-19, `ubuntu-latest` a
+    # migre vers Ubuntu 26 (resolute), et le PPA `alex-p/tesseract-
+    # ocr-devel` n'a pas encore de Release pour cette version.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout

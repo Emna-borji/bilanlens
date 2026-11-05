@@ -583,6 +583,33 @@ def afficher_stats(scores: list[dict]) -> None:
     for c in CLASSES:
         print(f"    {c:<32} : {par_classe[c]}")
 
+    # Synthese par categorie : nb de bons resultats par categorie,
+    # ou "bon" = `juste` (Q avec reponse) OU `abstention_correcte`
+    # (Q sans_reponse). Lecture directe : "sur X questions de cette
+    # categorie, le systeme fait N la bonne chose".
+    categories = ("extraction", "calcul", "comparaison",
+                   "texte_annexes", "sans_reponse")
+    bons_par_cat: dict[str, int] = {c: 0 for c in categories}
+    total_par_cat: dict[str, int] = {c: 0 for c in categories}
+    for s in scores:
+        cat = s["category"]
+        if cat not in total_par_cat:
+            continue
+        total_par_cat[cat] += 1
+        if s["classe"] in ("juste", "abstention_correcte"):
+            bons_par_cat[cat] += 1
+    total_bons = sum(bons_par_cat.values())
+    total_qs = sum(total_par_cat.values())
+    print()
+    print("  Bons resultats par categorie "
+          "(juste OU abstention_correcte) :")
+    for cat in categories:
+        t = total_par_cat[cat]
+        if t == 0:
+            continue
+        print(f"    {cat:<16} : {bons_par_cat[cat]}/{t}")
+    print(f"    {'TOTAL':<16} : {total_bons}/{total_qs}")
+
     # Recall@k globaux (sur Q avec page attendue).
     print()
     print("  Recall@k (sur Q avec page attendue) et MRR :")
