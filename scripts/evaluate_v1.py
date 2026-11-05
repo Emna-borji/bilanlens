@@ -18,10 +18,14 @@ Pipeline :
 Pour l'etape 7 (score.py) :
 - Une page pertinente = couple (doc, page_physique), pas la page seule
   (les 5 extraits peuvent venir de plusieurs entreprises).
-- Recall@k : au moins une page pertinente dans le top-k.
+- Recall@k : TOUTES les pages attendues doivent etre dans le top-k.
+  Pour une extraction/comparaison/texte_annexes, la page attendue est
+  unique ; pour un calcul avec `intermediate_values`, ce sont TOUTES
+  les pages des valeurs intermediaires (protocole §3.1). Une seule
+  manquante = recall KO sur la question entiere.
 - MRR : rang (1..k) du premier chunk pertinent.
-- Pour les calculs multi-page, protocole §3.1 : TOUTES les pages des
-  `intermediate_values` doivent etre dans le top-k.
+- Les Q `sans_reponse` n'entrent pas dans le calcul du recall
+  (`pages_attendues` court-circuite par categorie).
 
 Usage :
     .\\.venv\\Scripts\\python.exe scripts/evaluate_v1.py
