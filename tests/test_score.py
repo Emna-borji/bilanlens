@@ -303,19 +303,131 @@ def test_classes_exclusives():
 # ---------------------------------------------------------------------------
 # 6. Lecture annotations manuelles (Q04/Q08 du fichier reel)
 # ---------------------------------------------------------------------------
-def test_charger_annotations_fichier_reel():
+def test_charger_annotations_filtre_par_run_id():
+    """Le fichier annotations_texte.jsonl supporte plusieurs runs ;
+    `charger_annotations(run_id)` filtre strictement."""
+    from scripts.score import (RUN_ID_B0_LIBRE, RUN_ID_V1,
+                                  charger_annotations)
+
+    ann_v1 = charger_annotations(run_id=RUN_ID_V1)
+    assert "sotuver_2024_04" in ann_v1
+    assert "sotuver_2024_08" in ann_v1
+    q04_v1 = ann_v1["sotuver_2024_04"]
+    assert q04_v1["statut"] == "juste"
+    assert q04_v1["complete"] is False
+    q08_v1 = ann_v1["sotuver_2024_08"]
+    assert q08_v1["statut"] == "juste"
+    assert q08_v1["complete"] is True
+
+    ann_libre = charger_annotations(run_id=RUN_ID_B0_LIBRE)
+    # B0-libre : Q04 = fausse, Q08 = juste complete, Q21 = fausse
+    assert ann_libre["sotuver_2024_04"]["statut"] == "fausse"
+    assert ann_libre["sotuver_2024_08"]["statut"] == "juste"
+    assert ann_libre["sotuver_2024_08"]["complete"] is True
+    assert ann_libre["sfbt_2024_21"]["statut"] == "fausse"
+
+
+def test_charger_annotations_sans_run_id_retourne_toutes():
+    """Sans run_id : derniere entree par question_id (comportement
+    "global" pour les comptages)."""
     from scripts.score import charger_annotations
-    annotations = charger_annotations()
-    assert "sotuver_2024_04" in annotations
-    assert "sotuver_2024_08" in annotations
-    q04 = annotations["sotuver_2024_04"]
-    assert q04["statut"] == "juste"
-    assert q04["complete"] is False
-    assert q04["elements_manquants"]
-    q08 = annotations["sotuver_2024_08"]
-    assert q08["statut"] == "juste"
-    assert q08["complete"] is True
-    assert q08["elements_manquants"] == []
+    ann = charger_annotations()
+    # Au moins les Q04 et Q08 ; Q21 B0-libre.
+    assert "sotuver_2024_04" in ann
+    assert "sfbt_2024_21" in ann
+
+
+# ---------------------------------------------------------------------------
+# 6.bis. Detecteur d'abstention large (pseudo-abstention + filtrage chiffre)
+# ---------------------------------------------------------------------------
+def test_est_abstention_canonique():
+    """Forme canonique 'donnee non disponible' (B0-strict, V1)."""
+    from scripts.score import est_abstention
+    assert est_abstention("donnee non disponible") is True
+
+
+def test_est_abstention_reformulation_sans_chiffre():
+    """Pseudo-abstention B0-libre : 'n'est pas disponible' + aucun
+    chiffre significatif -> abstention."""
+    from scripts.score import est_abstention
+    assert est_abstention(
+        "La capacite normale de production n'est pas precisee dans le rapport"
+    ) is True
+    assert est_abstention(
+        "Les informations ne sont pas disponibles dans le rapport"
+    ) is True
+
+
+def test_est_abstention_rejet_si_chiffre_significatif():
+    """Un refus partiel qui contient un chiffre significatif n'est
+    PAS une abstention : c'est une reponse chiffree (potentiellement
+    fausse, mais a scorer sur sa valeur, pas en abstention)."""
+    from scripts.score import est_abstention
+    assert est_abstention(
+        "Le CA est de 100 836 224 TND, le detail n'est pas disponible"
+    ) is False
+
+
+def test_est_abstention_vide():
+    from scripts.score import est_abstention
+    assert est_abstention("") is True
+    assert est_abstention(None) is True
+
+
+# ---------------------------------------------------------------------------
+# 7. Classifier B0 (5 classes exclusives, sans suffixe recall)
+# ---------------------------------------------------------------------------
+def test_classer_b0_juste():
+    from scripts.score import classer_b0
+    q = {"category": "extraction"}
+    assert classer_b0(q, "100 836 224 TND", exact_ok=True) == "juste"
+
+
+def test_classer_b0_fausse():
+    from scripts.score import classer_b0
+    q = {"category": "calcul"}
+    assert classer_b0(q, "99,9 %", exact_ok=False) == "fausse"
+
+
+def test_classer_b0_abstention_a_tort_sans_suffixe():
+    """B0 : pas de suffixe recall."""
+    from scripts.score import classer_b0
+    q = {"category": "extraction"}
+    assert classer_b0(
+        q, "donnee non disponible", exact_ok=False,
+    ) == "abstention_a_tort"
+
+
+def test_classer_b0_pseudo_abstention_a_tort():
+    """Une pseudo-abstention B0-libre (sans chiffre) est aussi une
+    abstention_a_tort."""
+    from scripts.score import classer_b0
+    q = {"category": "texte_annexes"}
+    assert classer_b0(
+        q, "L'information n'est pas disponible dans le rapport",
+        exact_ok=False,
+    ) == "abstention_a_tort"
+
+
+def test_classer_b0_abstention_correcte_sans_reponse():
+    from scripts.score import classer_b0
+    q = {"category": "sans_reponse"}
+    assert classer_b0(
+        q, "donnee non disponible", exact_ok=True,
+    ) == "abstention_correcte"
+
+
+def test_classer_b0_reponse_a_tort_sur_sans_reponse():
+    from scripts.score import classer_b0
+    q = {"category": "sans_reponse"}
+    assert classer_b0(
+        q, "15 % du marche tunisien", exact_ok=False,
+    ) == "reponse_a_tort"
+
+
+def test_classes_b0_exclusives():
+    from scripts.score import CLASSES_B0
+    assert len(set(CLASSES_B0)) == 5
 
 
 # ---------------------------------------------------------------------------

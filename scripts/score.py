@@ -51,18 +51,41 @@ load_dotenv(RACINE / ".env")
 BENCH_PATH = RACINE / "data" / "benchmark" / "questions.jsonl"
 ANNOTATIONS_PATH = RACINE / "data" / "benchmark" / "annotations_texte.jsonl"
 V1_PATH = RACINE / "results" / "v1.jsonl"
+B0_PATH = RACINE / "results" / "b0.jsonl"
 SCORES_PATH = RACINE / "results" / "scores.jsonl"
+SCORES_COMPARE_PATH = RACINE / "results" / "scores_compare.jsonl"
 TOP20_PATH = RACINE / "results" / "retrieval_top20.jsonl"
+COMPARISON_SVG = RACINE / "results" / "comparison_B0_V1.svg"
 CHROMA_PATH = RACINE / "data" / "chroma"
+
+# Run_ids cibles de la comparaison etape 8. Fixes et cohes : meme
+# modele Flash-Lite pour les 3. Pour B0, il n'y a PAS de top_k dans
+# l'ID (pas de retrieval).
+RUN_ID_B0_STRICT = "b0_gemini35flashlite_90b019c736aa621c"
+RUN_ID_B0_LIBRE = "b0libre_gemini35flashlite_21c68d1cba543eeb"
+RUN_ID_V1 = "v1_gemini35flashlite_k5_a3c4180afaeb900e"
 
 K_LIST = (1, 3, 5, 10, 20)
 
+# 7 classes pour un run V1 (avec retrieval : recall_ok/ko distingue).
 CLASSES = (
     "juste",
     "fausse_recall_ok",
     "fausse_recall_ko",
     "abstention_a_tort_recall_ok",
     "abstention_a_tort_recall_ko",
+    "abstention_correcte",
+    "reponse_a_tort",
+)
+
+# 5 classes pour un run B0 (sans retrieval : pas de suffixe recall).
+# Un `abstention_a_tort` B0 ne veut PAS dire "recall KO" (il n'y a
+# pas de recherche) : c'est "le modele n'a pas donne la reponse
+# alors qu'il y en avait une a donner".
+CLASSES_B0 = (
+    "juste",
+    "fausse",
+    "abstention_a_tort",
     "abstention_correcte",
     "reponse_a_tort",
 )
@@ -87,9 +110,23 @@ def charger_jsonl(path: Path) -> list[dict]:
     return out
 
 
-def charger_annotations(path: Path = ANNOTATIONS_PATH) -> dict[str, dict]:
-    """Retourne `{question_id: annotation}`."""
-    return {a["question_id"]: a for a in charger_jsonl(path)}
+def charger_annotations(
+    run_id: str | None = None, path: Path = ANNOTATIONS_PATH,
+) -> dict[str, dict]:
+    """Retourne `{question_id: annotation}` pour les annotations
+    manuelles associees a `run_id`. Chaque ligne du fichier porte
+    un champ `run_id` : les reponses d'un meme question_id peuvent
+    differer d'un run a l'autre (B0-libre vs V1), donc l'annotation
+    aussi.
+
+    Si `run_id` est None, charge toutes les annotations sans
+    filtrage (utile pour le compte dans les tests)."""
+    out: dict[str, dict] = {}
+    for a in charger_jsonl(path):
+        if run_id is not None and a.get("run_id") != run_id:
+            continue
+        out[a["question_id"]] = a
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -361,10 +398,33 @@ def mrr(
 # Classification (7 classes exclusives)
 # ---------------------------------------------------------------------------
 def est_abstention(answer_text: str) -> bool:
-    """Reutilise `est_reponse_abstentive` d'evaluate_b0 (import local
-    pour eviter le cycle d'import a l'import time)."""
-    from scripts.evaluate_b0 import est_reponse_abstentive
-    return est_reponse_abstentive(answer_text or "")
+    """`True` ssi la reponse exprime un refus de repondre ET ne
+    contient PAS de chiffre significatif.
+
+    Pourquoi la combinaison : B0-libre (prompt sans consigne
+    d'abstention) reformule souvent le refus en langage libre
+    ("je ne dispose pas", "n'est pas disponible dans le rapport")
+    alors que B0-strict et V1 utilisent la forme canonique "donnee
+    non disponible". `est_abstention_large` capte les deux, mais
+    sans le garde-fou "pas de chiffre", une reponse chiffree qui
+    contient l'un de ces patterns ("Le CA s'eleve a 100 M TND,
+    ceci dit l'information complementaire n'est pas disponible")
+    serait classee a tort comme abstention. Le filtrage par
+    chiffre significatif resout ce cas.
+
+    Garantit que V1 reste classe comme avant : les 4 abstentions
+    V1 sont toutes au format canonique "donnee non disponible"
+    (capture par la branche stricte de est_abstention_large) et
+    n'ont pas de chiffre significatif.
+    """
+    from scripts.evaluate_b0 import (
+        contient_chiffre_significatif, est_abstention_large,
+    )
+    if not isinstance(answer_text, str) or not answer_text:
+        return True  # pas de reponse = abstention
+    if contient_chiffre_significatif(answer_text):
+        return False
+    return est_abstention_large(answer_text)
 
 
 def classer(
@@ -373,12 +433,11 @@ def classer(
     recall_ok: bool | None,
     exact_ok: bool,
 ) -> str:
-    """Attribue l'une des 7 classes exclusives.
+    """V1 : attribue l'une des 7 classes exclusives (CLASSES).
 
     `recall_ok` : True/False (page attendue dans top-k) ou None
     (categorie sans_reponse, pas de page attendue).
-    `exact_ok` : True si la reponse colle au benchmark (variable
-    selon le format).
+    `exact_ok` : True si la reponse colle au benchmark.
     """
     cat = benchmark_q.get("category")
     abstention = est_abstention(reponse_llm_text)
@@ -386,17 +445,32 @@ def classer(
     if cat == "sans_reponse":
         return "abstention_correcte" if abstention else "reponse_a_tort"
 
-    # Q avec reponse attendue.
     if abstention:
         if recall_ok:
             return "abstention_a_tort_recall_ok"
         return "abstention_a_tort_recall_ko"
-    # Reponse donnee.
     if exact_ok:
         return "juste"
     if recall_ok:
         return "fausse_recall_ok"
     return "fausse_recall_ko"
+
+
+def classer_b0(
+    benchmark_q: dict, reponse_llm_text: str, exact_ok: bool,
+) -> str:
+    """B0 : attribue l'une des 5 classes CLASSES_B0. Pas de suffixe
+    recall, car B0 ne fait pas de recherche (abstention_a_tort veut
+    dire "le modele n'a pas donne la reponse alors qu'elle existait
+    dans un rapport annuel que le systeme ne consulte pas")."""
+    cat = benchmark_q.get("category")
+    abstention = est_abstention(reponse_llm_text)
+
+    if cat == "sans_reponse":
+        return "abstention_correcte" if abstention else "reponse_a_tort"
+    if abstention:
+        return "abstention_a_tort"
+    return "juste" if exact_ok else "fausse"
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +482,7 @@ def scorer_question(
     retrieved_top20: list[dict],
     textes_chunks_v1: list[str],
     annotations: dict[str, dict],
+    run_id: str | None = None,
 ) -> dict:
     """Produit le dict JSON-serialisable pour `results/scores.jsonl`.
 
@@ -489,6 +564,8 @@ def scorer_question(
         complete = annotation.get("complete")
 
     return {
+        "run_id": run_id or record_v1.get("run_id"),
+        "provenance": "v1",
         "question_id": qid,
         "category": cat,
         "classe": classe,
@@ -497,6 +574,75 @@ def scorer_question(
         "pages_attendues": attendues_json,
         "rangs_pages_attendues": rangs,
         "valeurs_dans_contexte": vdc,
+        "exact_ok": exact_ok,
+        "detail_exact": detail_exact,
+        "complete": complete,
+        "mode_annotation": mode_annotation,
+        "reponse_modele": reponse_text,
+        "scored_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def scorer_question_b0(
+    benchmark_q: dict, record_b0: dict,
+    annotations: dict[str, dict], run_id: str,
+) -> dict:
+    """Scoring B0 (pas de retrieval). Produit la meme structure que
+    `scorer_question` mais avec `classe` dans CLASSES_B0 et sans
+    recall / mrr / retrieved / valeurs_dans_contexte."""
+    qid = benchmark_q["id"]
+    cat = benchmark_q.get("category")
+    reponse_text = (record_b0.get("answer_parsed") or {}).get("answer", "") or ""
+
+    mode_annotation = None
+    annotation = annotations.get(qid)
+    if cat == "sans_reponse":
+        exact_ok = est_abstention(reponse_text)
+        detail_exact = {"format": "sans_reponse", "abstention_detectee": exact_ok}
+        mode_annotation = "automatique"
+    elif cat == "texte_annexes":
+        if est_abstention(reponse_text):
+            exact_ok = False
+            detail_exact = {"format": "texte", "raison": "abstention"}
+            mode_annotation = "automatique"
+        elif annotation is not None:
+            exact_ok = annotation.get("statut") == "juste"
+            detail_exact = {
+                "format": "texte",
+                "statut": annotation.get("statut"),
+                "complete": annotation.get("complete"),
+                "elements_manquants": annotation.get("elements_manquants", []),
+                "justification": annotation.get("justification"),
+            }
+            mode_annotation = "manuel"
+        else:
+            exact_ok = False
+            detail_exact = {
+                "format": "texte",
+                "statut": "non_annotee",
+                "raison": "reponse donnee mais pas d'annotation manuelle",
+            }
+            mode_annotation = "manuel"
+    else:
+        if est_abstention(reponse_text):
+            exact_ok = False
+            detail_exact = {"format": (benchmark_q.get("answer") or {}).get("format"),
+                            "raison": "abstention"}
+        else:
+            exact_ok, detail_exact = exact_numerique(reponse_text, benchmark_q)
+        mode_annotation = "automatique"
+
+    classe = classer_b0(benchmark_q, reponse_text, exact_ok)
+    complete = None
+    if annotation is not None and cat == "texte_annexes":
+        complete = annotation.get("complete")
+
+    return {
+        "run_id": run_id,
+        "provenance": "b0",
+        "question_id": qid,
+        "category": cat,
+        "classe": classe,
         "exact_ok": exact_ok,
         "detail_exact": detail_exact,
         "complete": complete,
@@ -641,19 +787,311 @@ def afficher_stats(scores: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Comparaison B0-strict / B0-libre / V1 (etape 8)
+# ---------------------------------------------------------------------------
+def afficher_stats_b0(scores: list[dict], label: str) -> None:
+    if not scores:
+        print(f"Aucun score {label}.")
+        return
+    print()
+    print(f"=== Resume {label} ===")
+    print(f"  questions scorees   : {len(scores)}")
+    par_classe = {c: 0 for c in CLASSES_B0}
+    for s in scores:
+        par_classe[s["classe"]] = par_classe.get(s["classe"], 0) + 1
+    print()
+    print("  Repartition des classes :")
+    for c in CLASSES_B0:
+        print(f"    {c:<24} : {par_classe[c]}")
+
+    categories = ("extraction", "calcul", "comparaison",
+                   "texte_annexes", "sans_reponse")
+    bons = {c: 0 for c in categories}
+    tot = {c: 0 for c in categories}
+    for s in scores:
+        cat = s["category"]
+        if cat not in tot:
+            continue
+        tot[cat] += 1
+        if s["classe"] in ("juste", "abstention_correcte"):
+            bons[cat] += 1
+    print()
+    print("  Bons resultats par categorie (juste OU abstention_correcte) :")
+    total_bons = 0
+    total_qs = 0
+    for cat in categories:
+        if tot[cat] == 0:
+            continue
+        print(f"    {cat:<16} : {bons[cat]}/{tot[cat]}")
+        total_bons += bons[cat]
+        total_qs += tot[cat]
+    print(f"    {'TOTAL':<16} : {total_bons}/{total_qs}")
+
+
+def _ecrire_svg_comparaison(
+    bons_par_cat_par_run: dict[str, dict[str, int]],
+    totaux_par_cat: dict[str, int],
+    path: Path,
+) -> None:
+    """Genere un SVG simple de type bar chart groupe : une couleur
+    par run (B0-strict, B0-libre, V1), un groupe par categorie.
+    Pas de dependance matplotlib.
+    """
+    categories = ["extraction", "calcul", "comparaison",
+                   "texte_annexes", "sans_reponse"]
+    runs = ["B0-strict", "B0-libre", "V1"]
+    couleurs = {"B0-strict": "#999999", "B0-libre": "#e67e22", "V1": "#2e86de"}
+
+    largeur_cat = 180
+    espace_barre = 50
+    marge_x = 90
+    marge_y_haut = 50
+    marge_y_bas = 100
+    h_graphique = 300
+    w_total = marge_x + len(categories) * largeur_cat + marge_x
+    h_total = marge_y_haut + h_graphique + marge_y_bas
+
+    svg = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w_total}" '
+        f'height="{h_total}" viewBox="0 0 {w_total} {h_total}">',
+        f'<rect width="{w_total}" height="{h_total}" fill="#ffffff"/>',
+        '<text x="40" y="30" font-family="Arial" font-size="16" '
+        'font-weight="bold">Bons resultats par categorie '
+        '(juste OU abstention_correcte)</text>',
+    ]
+
+    # Axe Y simple : graduations 0, 0.5, 1 (ratio bons/total).
+    axe_bas = marge_y_haut + h_graphique
+    for frac, lbl in [(0.0, "0"), (0.5, "50 %"), (1.0, "100 %")]:
+        y = axe_bas - int(frac * h_graphique)
+        svg.append(
+            f'<line x1="{marge_x - 10}" y1="{y}" x2="{w_total - marge_x}" '
+            f'y2="{y}" stroke="#dddddd" stroke-width="1"/>'
+        )
+        svg.append(
+            f'<text x="{marge_x - 15}" y="{y + 4}" font-family="Arial" '
+            f'font-size="11" text-anchor="end" fill="#666">{lbl}</text>'
+        )
+
+    # Barres groupees.
+    for i, cat in enumerate(categories):
+        tot = totaux_par_cat.get(cat, 0) or 1
+        x0 = marge_x + i * largeur_cat + 20
+        for j, run in enumerate(runs):
+            n = bons_par_cat_par_run.get(run, {}).get(cat, 0)
+            frac = n / tot
+            h = int(frac * h_graphique)
+            xb = x0 + j * (espace_barre - 10)
+            yb = axe_bas - h
+            svg.append(
+                f'<rect x="{xb}" y="{yb}" width="35" height="{h}" '
+                f'fill="{couleurs[run]}" opacity="0.9"/>'
+            )
+            svg.append(
+                f'<text x="{xb + 17}" y="{yb - 4}" font-family="Arial" '
+                f'font-size="10" text-anchor="middle" fill="#333">'
+                f'{n}/{tot}</text>'
+            )
+        # Label categorie.
+        svg.append(
+            f'<text x="{x0 + 55}" y="{axe_bas + 20}" font-family="Arial" '
+            f'font-size="12" text-anchor="middle" fill="#333">{cat}</text>'
+        )
+
+    # Legende.
+    lx = marge_x
+    ly = h_total - 40
+    for j, run in enumerate(runs):
+        svg.append(
+            f'<rect x="{lx + j * 150}" y="{ly}" width="18" height="12" '
+            f'fill="{couleurs[run]}"/>'
+        )
+        svg.append(
+            f'<text x="{lx + j * 150 + 24}" y="{ly + 10}" font-family="Arial" '
+            f'font-size="12" fill="#333">{run}</text>'
+        )
+    svg.append("</svg>")
+    path.write_text("\n".join(svg), encoding="utf-8")
+
+
+def mode_compare(questions: list[dict]) -> int:
+    """Score B0-strict, B0-libre et V1 sur le MEME benchmark et
+    produit : results/scores_compare.jsonl + tableau + SVG."""
+    lignes_b0 = charger_jsonl(B0_PATH)
+    lignes_v1 = charger_jsonl(V1_PATH)
+    b0_strict = {l["question_id"]: l for l in lignes_b0
+                 if l.get("run_id") == RUN_ID_B0_STRICT}
+    b0_libre = {l["question_id"]: l for l in lignes_b0
+                if l.get("run_id") == RUN_ID_B0_LIBRE}
+    v1 = {l["question_id"]: l for l in lignes_v1
+          if l.get("run_id") == RUN_ID_V1}
+
+    print(f"B0-strict : {len(b0_strict)}/31 reponses")
+    print(f"B0-libre  : {len(b0_libre)}/31 reponses")
+    print(f"V1        : {len(v1)}/31 reponses")
+
+    # prompt_version par run.
+    pv_b0_strict = (next(iter(b0_strict.values())) or {}).get("prompt_version")
+    pv_b0_libre = (next(iter(b0_libre.values())) or {}).get("prompt_version")
+    pv_v1 = (next(iter(v1.values())) or {}).get("prompt_version")
+    print()
+    print("prompt_version par run :")
+    print(f"  B0-strict : {pv_b0_strict}")
+    print(f"  B0-libre  : {pv_b0_libre}  <-- SYSTEM_INSTRUCTION different "
+          "(voir prompts.py : SYSTEM_INSTRUCTION_B0_LIBRE, sans consigne "
+          "d'abstention)")
+    print(f"  V1        : {pv_v1}        (meme SYSTEM_INSTRUCTION que B0-strict)")
+
+    # Top-20 pour V1 uniquement.
+    print()
+    print("=== Top-20 Chroma (V1 uniquement) ===")
+    top20_par_qid, textes_par_qid, nb_appels = produire_top20(questions)
+    print(f"Appels API embeddings : {nb_appels}")
+
+    scores_tous: list[dict] = []
+    # Score B0-strict.
+    ann_strict = charger_annotations(run_id=RUN_ID_B0_STRICT)
+    scores_b0_strict = []
+    for q in questions:
+        rec = b0_strict.get(q["id"])
+        if rec is None:
+            continue
+        scores_b0_strict.append(
+            scorer_question_b0(q, rec, ann_strict, RUN_ID_B0_STRICT)
+        )
+    # Score B0-libre.
+    ann_libre = charger_annotations(run_id=RUN_ID_B0_LIBRE)
+    scores_b0_libre = []
+    for q in questions:
+        rec = b0_libre.get(q["id"])
+        if rec is None:
+            continue
+        scores_b0_libre.append(
+            scorer_question_b0(q, rec, ann_libre, RUN_ID_B0_LIBRE)
+        )
+    # Score V1.
+    ann_v1 = charger_annotations(run_id=RUN_ID_V1)
+    scores_v1 = []
+    for q in questions:
+        rec = v1.get(q["id"])
+        if rec is None:
+            continue
+        top20 = top20_par_qid.get(q["id"], [])
+        textes_top20 = textes_par_qid.get(q["id"], [])
+        textes_v1 = textes_des_5_chunks_v1(rec, textes_top20, top20)
+        scores_v1.append(
+            scorer_question(q, rec, top20, textes_v1, ann_v1,
+                             run_id=RUN_ID_V1)
+        )
+
+    scores_tous = scores_b0_strict + scores_b0_libre + scores_v1
+    with SCORES_COMPARE_PATH.open("w", encoding="utf-8") as f:
+        for s in scores_tous:
+            f.write(json.dumps(s, ensure_ascii=False) + "\n")
+    print(f"Ecrit : {SCORES_COMPARE_PATH.relative_to(RACINE)}  "
+          f"({len(scores_tous)} lignes)")
+
+    afficher_stats_b0(scores_b0_strict, "B0-strict")
+    afficher_stats_b0(scores_b0_libre, "B0-libre")
+    afficher_stats(scores_v1)
+
+    # Table de synthese.
+    categories = ["extraction", "calcul", "comparaison",
+                   "texte_annexes", "sans_reponse"]
+    bons_par_run: dict[str, dict[str, int]] = {}
+    totaux = {c: 0 for c in categories}
+    for run_label, scores in [("B0-strict", scores_b0_strict),
+                               ("B0-libre", scores_b0_libre),
+                               ("V1", scores_v1)]:
+        bons = {c: 0 for c in categories}
+        for s in scores:
+            cat = s["category"]
+            if cat in bons and s["classe"] in ("juste",
+                                                 "abstention_correcte"):
+                bons[cat] += 1
+            if cat in totaux:
+                totaux[cat] += 1
+        bons_par_run[run_label] = bons
+    for cat in totaux:
+        totaux[cat] = totaux[cat] // 3  # on a compte 3x le meme total
+
+    print()
+    print("=== Tableau de comparaison (bons = juste OU abstention_correcte) ===")
+    print(f"  {'categorie':<16}  {'B0-strict':>10}  {'B0-libre':>10}  "
+          f"{'V1':>10}  {'total':>8}")
+    for cat in categories:
+        row = (
+            f"  {cat:<16}  "
+            f"{bons_par_run['B0-strict'][cat]:>10}  "
+            f"{bons_par_run['B0-libre'][cat]:>10}  "
+            f"{bons_par_run['V1'][cat]:>10}  "
+            f"{totaux[cat]:>8}"
+        )
+        print(row)
+    tt_b0s = sum(bons_par_run["B0-strict"].values())
+    tt_b0l = sum(bons_par_run["B0-libre"].values())
+    tt_v1 = sum(bons_par_run["V1"].values())
+    tt_tot = sum(totaux.values())
+    print(f"  {'TOTAL':<16}  {tt_b0s:>10}  {tt_b0l:>10}  "
+          f"{tt_v1:>10}  {tt_tot:>8}")
+
+    # Separation : problemes de recherche (recall KO sans valeurs
+    # dans contexte) vs abstentions avec valeurs presentes.
+    print()
+    print("=== Diagnostic V1 : problemes de recherche vs abstentions avec valeurs ===")
+    pb_recherche: list[str] = []
+    abstention_valeurs: list[str] = []
+    for s in scores_v1:
+        if s["classe"] == "abstention_a_tort_recall_ok":
+            abstention_valeurs.append(s["question_id"])
+        elif (s["classe"] == "abstention_a_tort_recall_ko"
+              and s["valeurs_dans_contexte"] is not True):
+            pb_recherche.append(s["question_id"])
+    print(f"  Problemes de recherche (recall KO ET valeurs absentes) : "
+          f"{pb_recherche}")
+    print(f"  Abstentions avec valeurs presentes dans le top-5 : "
+          f"{abstention_valeurs}")
+    # Les Q recall KO mais valeurs presentes (ex. Q23 par la p.52).
+    print()
+    recall_ko_valeurs_ok = [
+        s["question_id"] for s in scores_v1
+        if s["recall"]["recall_at_5"] is False
+        and s["valeurs_dans_contexte"] is True
+    ]
+    print(f"  Recall@5 KO MAIS valeurs dans contexte (via page alternative) : "
+          f"{recall_ko_valeurs_ok}")
+
+    # SVG.
+    _ecrire_svg_comparaison(bons_par_run, totaux, COMPARISON_SVG)
+    print()
+    print(f"Ecrit : {COMPARISON_SVG.relative_to(RACINE)}")
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main() -> int:
     parseur = argparse.ArgumentParser(description="Score du run V1.")
     parseur.add_argument(
+        "--mode", choices=["v1", "compare"], default="v1",
+        help="'v1' : score le dernier run V1 (default). 'compare' : "
+             "compare B0-strict / B0-libre / V1 (etape 8)."
+    )
+    parseur.add_argument(
         "--run-id", default=None,
         help="run_id a scorer dans results/v1.jsonl. Default : le "
-             "dernier run_id trouve dans v1.jsonl."
+             "dernier run_id trouve dans v1.jsonl. Ignore en mode "
+             "compare (run_ids pin par le code)."
     )
     args = parseur.parse_args()
 
     questions = charger_jsonl(BENCH_PATH)
     print(f"Questions chargees : {len(questions)}")
+
+    if args.mode == "compare":
+        return mode_compare(questions)
 
     lignes_v1 = charger_jsonl(V1_PATH)
     if not lignes_v1:
@@ -664,8 +1102,8 @@ def main() -> int:
     v1_par_qid = {l["question_id"]: l for l in v1_run}
     print(f"Run V1 : {run_id}  ({len(v1_run)} reponses)")
 
-    annotations = charger_annotations()
-    print(f"Annotations manuelles chargees : {len(annotations)}")
+    annotations = charger_annotations(run_id=run_id)
+    print(f"Annotations manuelles chargees (run {run_id}) : {len(annotations)}")
 
     print()
     print("=== Top-20 Chroma sur les 31 questions ===")
