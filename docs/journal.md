@@ -1957,18 +1957,38 @@ des calculs**. Une seule variable à manipuler, tout le reste
 constant, pour tester la piste « consigne prudente bloque les
 calculs » :
 
-- **Même benchmark** (31 Q).
-- **Mêmes chunks V1** (top-5 Chroma déjà enregistrés dans
-  `results/v1.jsonl`, pas de relance retrieval).
-- **Modifier UNE consigne** du `SYSTEM_INSTRUCTION` : assouplir
-  « abstention au moindre doute » en « quand les valeurs
-  nécessaires sont visibles dans le contexte, faire le calcul
-  explicitement avant de conclure ».
-- **Mesurer sur les 7 calculs** (6 abstentions + Q10) comment
-  la répartition `juste` / `abstention_a_tort` / `fausse` bouge.
+- **Relancer les 31 questions** avec exactement les mêmes
+  chunks V1 (top-5 déjà enregistrés dans `results/v1.jsonl`,
+  pas de nouvelle requête Chroma).
+- **Modifier UNE SEULE consigne** du `SYSTEM_INSTRUCTION` :
+  assouplir « abstention au moindre doute » en « quand les
+  valeurs nécessaires sont visibles dans le contexte, faire
+  le calcul explicitement avant de conclure ». Tout le reste
+  du prompt reste identique, pour isoler l'effet consigne.
+- **Critère principal** : évolution du score sur les **7
+  calculs** (Q02, Q06, Q10, Q14, Q19, Q23, Q28). L'hypothèse
+  prédit une baisse des `abstention_a_tort` et une hausse des
+  `juste` ; si la hausse va plutôt dans `fausse`, c'est que
+  la capacité calcul elle-même limite, pas la consigne.
+- **Contrôle anti-invention** : les **4 sans_reponse** (Q05,
+  Q16, Q26, Q31) doivent rester en `abstention_correcte`, et
+  aucune autre Q ne doit basculer vers `fausse` ou
+  `reponse_a_tort`. Si l'assouplissement provoque de nouvelles
+  réponses fausses, la consigne révisée n'est pas acceptable
+  même si elle résout les calculs.
 
 Cette expérience distingue l'hypothèse « consigne trop prudente »
 de l'hypothèse « capacité limite du modèle sur les calculs ».
+
+---
+
+### Étape 8 — close
+
+Évaluation terminée. Les étapes 1 à 8 du planning sont livrées :
+B0 (strict + libre), V1 (RAG k=5), métriques (recall, exactitude,
+valeurs_dans_contexte, 7 classes), comparaison à prompt système
+identique sur 31 Q. Décision V2 ouverte, expérience ci-dessus
+prête à lancer.
 
 ### Fichiers modifiés dans la session
 

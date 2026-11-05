@@ -934,9 +934,10 @@ def diagnostiquer_v1(scores_v1: list[dict]) -> dict:
     Point distinct, HORS echecs :
     - `juste_malgre_recall_ko` : classe=juste ET recall@5=False.
       Le modele repond juste meme si la page attendue stricte n'est
-      pas dans le top-5 (typique des comparaisons avec les 2 valeurs
-      sur la meme page mais via plusieurs colonnes). Interessant
-      pour la calibration de Recall@k comme proxy de la qualite.
+      pas dans le top-5 : les valeurs sont lues sur une autre page
+      que la page attendue (ex. Q07 lit en p. 2 au lieu de p. 9 ;
+      Q20 en p. 17-18 au lieu de p. 3). Interessant pour la
+      calibration de Recall@k comme proxy de la qualite.
     """
     pb_recherche: list[str] = []
     abstentions_valeurs: list[str] = []
