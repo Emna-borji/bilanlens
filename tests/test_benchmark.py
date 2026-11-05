@@ -192,6 +192,22 @@ def test_benchmark_coherence_categorie_answer(questions):
             )
 
 
+def test_benchmark_sans_reponse_evidence_page_physical_null(questions):
+    """Pour toute Q `sans_reponse`, `evidence_page_physical` doit etre
+    `null` dans le JSONL. Une Q sans reponse n'a pas de page de
+    reference : renseigner une page y serait une donnee trompeuse,
+    susceptible de faire entrer la Q dans le calcul du recall@k alors
+    que la bonne reponse est l'abstention. `pages_attendues` en
+    `scripts/evaluate_v1.py` court-circuite aussi par categorie en
+    defense en profondeur, mais la source doit rester saine."""
+    for q in questions:
+        if q["category"] == "sans_reponse":
+            assert q.get("evidence_page_physical") is None, (
+                f"{q['id']} : sans_reponse mais evidence_page_physical "
+                f"= {q.get('evidence_page_physical')!r} (doit etre null)"
+            )
+
+
 def test_benchmark_calcul_et_comparaison_ont_formule(questions):
     for q in questions:
         if q["category"] in ("calcul", "comparaison"):

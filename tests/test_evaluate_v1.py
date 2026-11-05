@@ -345,8 +345,25 @@ def test_pages_attendues_sans_reponse_vide():
     from scripts.evaluate_v1 import pages_attendues
 
     q = {
+        "category": "sans_reponse",
         "evidence_doc": "real_sotuver_2024.pdf",
         "evidence_page_physical": None,
+    }
+    assert pages_attendues(q) == set()
+
+
+def test_pages_attendues_sans_reponse_meme_avec_page_renseignee():
+    """Defense en profondeur : meme si le benchmark renseigne par
+    erreur un `evidence_page_physical` pour une Q `sans_reponse`, le
+    court-circuit par categorie doit l'emporter et renvoyer un
+    ensemble vide. Une Q sans_reponse n'entre JAMAIS dans le calcul
+    du recall : la bonne reponse est l'abstention, pas une page."""
+    from scripts.evaluate_v1 import pages_attendues
+
+    q = {
+        "category": "sans_reponse",
+        "evidence_doc": "real_sotuver_2024.pdf",
+        "evidence_page_physical": 4,  # ne doit PAS etre pris en compte
     }
     assert pages_attendues(q) == set()
 

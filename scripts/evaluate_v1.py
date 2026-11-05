@@ -246,8 +246,13 @@ def pages_attendues(question: dict) -> set[tuple[str, int]]:
     `evidence_page_physical` suffit.
 
     Pour les questions `sans_reponse` : set vide (aucune page attendue,
-    la bonne reponse est l'abstention).
+    la bonne reponse est l'abstention). Le court-circuit par categorie
+    fait AUTORITE sur `evidence_page_physical` meme si le benchmark
+    renseigne une page par erreur : une Q sans_reponse ne doit jamais
+    entrer dans le calcul du recall.
     """
+    if question.get("category") == "sans_reponse":
+        return set()
     evidence_doc = question.get("evidence_doc")
     if not evidence_doc:
         return set()
