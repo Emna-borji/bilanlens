@@ -1634,3 +1634,127 @@ dans toutes les variantes B0.
 - `tests/test_evaluate_b0.py` : adaptation `test_system_instruction_b0_libre`.
 - `results/b0.jsonl` : run `b0_gemini35flashlite_90b019c736aa621c` complet.
 - `results/v1.jsonl` : run `v1_gemini35flashlite_k5_a3c4180afaeb900e` complet.
+
+---
+
+## 2026-11-05 — Étape 7 : score.py, recall séparé de l'exactitude
+
+### Ce que j'ai fait
+
+- Nouveau script `scripts/score.py` qui sépare strictement deux
+  dimensions : (1) **recall** = les pages attendues sont-elles
+  dans le top-k Chroma ? ; (2) **exactitude** = la réponse du
+  modèle colle-t-elle au benchmark ?
+- Classes exclusives (7) : `juste`, `fausse_recall_ok`,
+  `fausse_recall_ko`, `abstention_a_tort_recall_ok`,
+  `abstention_a_tort_recall_ko`, `abstention_correcte`,
+  `reponse_a_tort`.
+- Top-20 Chroma par question → 5 niveaux de recall (k ∈
+  {1, 3, 5, 10, 20}) + MRR en une seule query par Q. **0 appel
+  LLM, 0 appel API embeddings** (les 31 embeddings questions
+  sont dans le cache `data/cache_embeddings/`).
+- Nouvel indicateur **séparé** `valeurs_dans_contexte` : True
+  ssi toutes les valeurs numériques attendues apparaissent dans
+  la concaténation des 5 chunks du run V1 (après compression
+  des séparateurs de milliers). `null` pour texte_annexes et
+  sans_reponse.
+- Annotations manuelles versionnées dans
+  `data/benchmark/annotations_texte.jsonl` (champs : `statut`,
+  `complete`, `elements_manquants`, `justification`). Q04 et Q08
+  annotées, règle « juste = répond à ce que la question
+  demande ; un complément absent n'invalide pas la réponse mais
+  est noté ».
+- Nouveau fichier `results/retrieval_top20.jsonl` (top-20 brut,
+  ne touche PAS à `v1.jsonl`), nouveau `results/scores.jsonl`.
+- En-tête `evaluate_v1.py` corrigé : la règle « toutes les
+  pages attendues » vaut pour TOUTE question avec
+  `intermediate_values` (calcul OU comparaison), pas juste
+  « calcul ».
+- 34 tests unitaires (parser numérique, direction, exactitude
+  par format, recall@k, MRR, 7 classes, lecture annotations,
+  intégration scorer_question).
+
+### Résultats du scoring V1 (run `v1_gemini35flashlite_k5_a3c4180afaeb900e`)
+
+| Classe | N / 31 |
+|---|---|
+| `juste` | **16** |
+| `fausse_recall_ok` | 1 (Q10) |
+| `fausse_recall_ko` | 0 |
+| `abstention_a_tort_recall_ok` | 4 |
+| `abstention_a_tort_recall_ko` | 6 |
+| `abstention_correcte` | 4 |
+| `reponse_a_tort` | 0 |
+
+**Recall@k** (sur les 27 Q avec page attendue) :
+
+| k | Recall@k |
+|---|---|
+| 1 | 10/27 (37 %) |
+| 3 | 14/27 (52 %) |
+| 5 | **19/27 (70 %)** ← conforme à l'analyse Étape 6 |
+| 10 | 24/27 (89 %) |
+| 20 | 25/27 (93 %) |
+
+**MRR = 0,543.**
+
+**Valeurs_dans_contexte** (indépendant du recall) : True=21,
+False=1 (Q30), N/A=9 (5 texte_annexes + 4 sans_reponse).
+
+**Réponses incomplètes** (annotation manuelle) : 1
+- `sotuver_2024_04` : juste mais omet la clause « provision
+  pour dépréciation sur les articles à rotation lente ou
+  obsolètes » (présente dans le chunk p. 9 récupéré).
+
+### Points marquants
+
+- **Q10 reste le seul cas `fausse_recall_ok`** : page 3 récupérée
+  au rang 1, mais interprétation sémantique fausse de « Total
+  passif » → 16,51 % au lieu de 13,03 %.
+- **4 `abstention_a_tort_recall_ok`** : calculs où la page
+  principale était récupérée et le modèle refuse quand même
+  (Q02, Q06, Q14, Q19). C'est le signal le plus clair pour la
+  V2 : revoir la consigne stricte ou enrichir le prompt avec la
+  définition des formules du cours.
+- **Q07, Q20, Q23, Q28** : recall@5 KO mais `valeurs_dans_
+  contexte=True`. Elles entreraient dans le top-10 pour trois
+  d'entre elles (Q23 page 4 à rang 6 ; cf. retrieval_top20).
+  **Recall@10 = 24/27 (89 %)** le confirme.
+- **Pas un seul `fausse_recall_ko` et pas un seul `reponse_a_
+  tort`** : quand Flash-Lite n'a pas la matière, il abstient. Le
+  RAG a bien neutralisé les 4 hallucinations numériques
+  identifiées en B0-libre.
+
+### Décisions prises
+
+| Décision | Justification |
+|---|---|
+| Cosinus informatif seulement, pas critère d'exactitude | Distances élevées même pour textes peu liés (Q23 page 1 à 0,18) |
+| Classes exclusives : `juste` ⟂ `abstention_correcte` ⟂ `reponse_a_tort` | Lisibilité de la table de résultats |
+| Tolérance absolue par défaut = 1 pour les montants | Les rapports BVMT arrondissent au dinar ; diff=1 courant (Q24) |
+| `valeurs_dans_contexte` séparé du recall | Métrique indépendante : Q23 est recall KO strict mais valeurs OK |
+| Annotations manuelles versionnées | `data/benchmark/annotations_texte.jsonl` : trace + justification + complétude |
+| Règle « juste = répond au besoin ; complément absent toléré » | Q08 juste même sans NCT 11, car NCT 11 décrit le traitement, pas le motif |
+| Mode d'annotation stocké par ligne dans scores.jsonl | `manuel` pour Q04/Q08 ; `automatique` pour tout le reste |
+| top-20 écrit dans un fichier SÉPARÉ `retrieval_top20.jsonl` | Préserve `v1.jsonl` et son `run_id` |
+
+### Ce que j'ai appris
+
+- **La métrique Recall@k seule ne suffit pas.** Deux Q
+  (Q07, Q20) ont recall KO mais `valeurs_dans_contexte=True` et
+  le modèle y répond juste. Trois autres (Q23, Q28, Q30) ont le
+  même profil mais s'abstiennent. La question de recherche pour
+  la V2 : comment faire monter les pages des `intermediate_
+  values` dans le top-5 ?
+- **Le passage de k=5 à k=10 ferait monter le recall de
+  70 % à 89 %.** Compromis à mesurer en V2 : avec k=10, risque
+  d'augmenter les hallucinations de type Q10 (contexte plus
+  volumineux, modèle plus distrait).
+- **Flash-Lite a un biais à l'abstention sur les calculs sous
+  contexte.** 4 Q sur 7 calculs avec recall OK finissent en
+  abstention. Un prompt enrichi (formule explicitée) pourrait
+  débloquer ces cas sans toucher au recall.
+- **Les annotations manuelles sont rentables à ce stade.** 2
+  annotations suffisent à scorer sans ambiguïté les 2 réponses
+  `texte_annexes` chiffrables ; plus propre qu'un seuil cosinus
+  arbitraire.
