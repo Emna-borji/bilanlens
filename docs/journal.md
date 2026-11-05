@@ -1584,8 +1584,15 @@ dans toutes les variantes B0.
   passif »), pas documentaire. Motive la mesure séparée recall /
   exactitude à l'étape 7.
 - **Q23 (ciments_bizerte, ROA 2 pages)** : page 4 (résultat net)
-  absente du top-5, seule page 2 (total actif) remonte → abstention
-  correcte du modèle. **Recall KO** sur un calcul multi-page.
+  absente du top-5. **Recall KO** sur un calcul multi-page.
+  **(Correction au 2026-11-05 — cf. entrée étape 8)** : j'avais
+  écrit « abstention correcte » ci-dessous, c'est trompeur. Le
+  résultat net apparaît en réalité page 52 (chunk rang 4,
+  intitulé « RESULTAT COMPTABLE APRES IMPÔTS -44 790 355 »).
+  Donc `valeurs_dans_contexte=True` malgré `recall@5 KO` strict,
+  et la classe exacte est `abstention_a_tort_recall_ko` (pas
+  `abstention_correcte`, qui est réservé aux Q `sans_reponse`).
+  Le modèle avait la matière, il s'est abstenu quand même.
 - **Hallucinations numériques** sans contexte (B0-libre, 4 cas,
   conf=high) → avec RAG, remplacées soit par abstention soit par
   réponse citée correcte. Le RAG réduit l'invention en forçant un
@@ -1758,3 +1765,156 @@ False=1 (Q30), N/A=9 (5 texte_annexes + 4 sans_reponse).
   annotations suffisent à scorer sans ambiguïté les 2 réponses
   `texte_annexes` chiffrables ; plus propre qu'un seuil cosinus
   arbitraire.
+
+---
+
+## 2026-11-05 (soir) — Étape 8 : comparaison B0-strict / B0-libre / V1
+
+### Ce que j'ai fait
+
+- Nouveau mode `scripts/score.py --mode compare` qui score les
+  **3 runs enregistrés** avec les mêmes règles, écrit
+  `results/scores_compare.jsonl` (93 lignes = 31 × 3), produit
+  un tableau et un SVG `results/comparison_B0_V1.svg`. **0
+  appel LLM, 0 appel API embeddings** (cache intégralement chaud).
+- Nouveau détecteur `score.est_abstention` : combine `est_
+  abstention_large` (patterns `_PATTERNS_ABSTENTION_LARGE` déjà
+  existants dans `evaluate_b0.py`) avec un garde-fou « pas de
+  chiffre significatif ». Captures les **pseudo-abstentions**
+  B0-libre (« n'est pas disponible dans le rapport », « n'est
+  pas précisée ») sans reclasser à tort une réponse chiffrée
+  qui contiendrait ce motif comme complément. **Vérification :
+  V1 reste à 20/31** après le changement, identique à l'étape 7.
+- Nouveau classifier `classer_b0` avec **5 classes exclusives**
+  (`CLASSES_B0`) sans suffixe recall : `juste`, `fausse`,
+  `abstention_a_tort`, `abstention_correcte`, `reponse_a_tort`.
+  Cohérent avec le fait que B0 n'a pas de retrieval.
+- Fichier `data/benchmark/annotations_texte.jsonl` étendu avec
+  un champ `run_id` par ligne. 2 annotations V1 (Q04 juste
+  incomplète, Q08 juste complète) + 3 annotations B0-libre
+  (Q04 fausse — piège commissaires ; Q08 juste complète avec
+  note « aucune source » ; Q21 fausse — méthode inventée).
+  Q12 et Q25 B0-libre : **pas d'annotation** car détectées
+  automatiquement comme pseudo-abstentions → classées
+  `abstention_a_tort`.
+
+### Résultats
+
+**Prompt_version par run** (le hash change si `SYSTEM_INSTRUCTION`
+ou `TEMPLATE_*_USER` bouge) :
+
+| Run | prompt_version | SYSTEM_INSTRUCTION |
+|---|---|---|
+| B0-strict | `90b019c736aa621c` | `SYSTEM_INSTRUCTION` (strict) |
+| **B0-libre** | `21c68d1cba543eeb` | **`SYSTEM_INSTRUCTION_B0_LIBRE`** (différent : pas de consigne d'abstention) |
+| V1 | `a3c4180afaeb900e` | `SYSTEM_INSTRUCTION` (strict, identique à B0-strict) |
+
+Les hash V1 et B0-strict diffèrent uniquement à cause du
+`TEMPLATE_USER` (V1 ajoute contexte RAG + consigne `cited_
+extraits`). Le prompt système reste byte-à-byte identique.
+**B0-libre utilise un prompt système différent**, d'où l'écart
+non comparable sur la consigne.
+
+**Bons résultats par catégorie :**
+
+| Catégorie | B0-strict | B0-libre | V1 | Total |
+|---|---|---|---|---|
+| extraction | 0 | 0 | **8** | 9 |
+| calcul | 0 | 0 | 0 | 7 |
+| comparaison | 0 | 0 | **6** | 6 |
+| texte_annexes | 0 | 1 | **2** | 5 |
+| sans_reponse | 4 | 4 | 4 | 4 |
+| **TOTAL** | **4/31** | **5/31** | **20/31** | 31 |
+
+Le RAG apporte un gain **x5** sur le total par rapport à B0-strict
+et **x4** sur B0-libre.
+
+**V1 — Recall@k (sur 27 Q avec page attendue) et MRR** :
+
+| k | Recall@k |
+|---|---|
+| 1 | 10/27 (37 %) |
+| 3 | 14/27 (52 %) |
+| **5** | **19/27 (70 %)** |
+| 10 | 24/27 (89 %) |
+| 20 | 25/27 (93 %) |
+| MRR | **0,543** |
+
+**Répartition B0-libre (ce que l'ablation du prompt libère)** :
+
+| Classe B0-libre | N |
+|---|---|
+| juste | 1 (Q08) |
+| fausse | 6 (4 hallucinations numériques + Q04 piège commissaires + Q21 méthode inventée) |
+| abstention_correcte | 4 (sans_reponse) |
+| abstention_a_tort | 20 (le modèle « sait qu'il ne sait pas » pour la majorité) |
+| reponse_a_tort | 0 |
+
+Sur les 27 Q non-sans_reponse, Flash-Lite libre répond pour
+seulement 7 (1 juste + 6 fausses) et s'abstient pour 20. Le
+taux d'hallucination conditionnel ≈ 86 % (6/7).
+
+### Séparation des problèmes V1
+
+**Problèmes de recherche** (recall@5 KO ET valeurs absentes du
+top-5) — à traiter en V2 par le retrieval :
+`monoprix_consolide_2024_12`, `sfbt_2024_21`,
+`ciments_bizerte_2024_25`, `delice_holding_2024_30`.
+
+**Abstentions avec valeurs présentes dans le top-5** — à traiter
+en V2 par le prompt / la formule du cours, pas par le
+retrieval :
+- `sotuver_2024_02`, `sotuver_2024_06`, `monoprix_2024_14`,
+  `sfbt_2024_19` : recall@5 OK + valeurs dans contexte, modèle
+  s'abstient quand même.
+- `ciments_bizerte_2024_23`, `delice_holding_2024_28` : recall@5
+  KO strict mais valeurs dans contexte via **page alternative**
+  (p. 52 « Résultat comptable après impôts » pour Q23). Le
+  modèle a la matière mais pas sous l'intitulé qu'il attend.
+
+### Décisions prises
+
+| Décision | Justification |
+|---|---|
+| `est_abstention` combine `est_abstention_large` + « pas de chiffre significatif » | Capture les pseudo-abstentions B0-libre sans reclasser une réponse chiffrée partiellement « non disponible » |
+| 5 classes B0 (sans suffixe recall) | B0 ne fait pas de recherche ; mettre `_recall_ok` serait trompeur |
+| Annotations indexées par `(run_id, question_id)` | Une même Q peut avoir des réponses différentes selon le prompt ; l'annotation aussi |
+| SVG généré sans matplotlib | Pas de nouvelle dépendance ; graphique simple suffit pour l'étape 8 |
+| Pin `ubuntu-24.04` en CI | `ubuntu-latest` = resolute depuis 2026-10-19 ; le PPA Tesseract ne la supporte pas encore |
+
+### Ce que j'ai appris
+
+- **B0-strict = 4/31 et B0-libre = 5/31** : sans RAG, un LLM
+  généraliste ne peut pas répondre aux questions BVMT. Le passage
+  à 20/31 avec V1 (x5) démontre que le gain vient bien du
+  retrieval, pas d'un biais du scoring.
+- **Le prompt système change le mode d'échec, pas la justesse.**
+  B0-strict s'abstient partout (sauf sans_reponse), B0-libre
+  invente 6 fois et s'abstient 20 fois. La seule réponse juste
+  B0-libre (Q08) est du pur hasard pré-entraînement : « aucune
+  source » noté dans l'annotation.
+- **Séparer recall et exactitude a de la valeur.** V1 a 10 Q
+  qui échouent : 4 problèmes de recherche + 6 problèmes de
+  lecture (4 abstentions avec valeurs + 2 recall KO via page
+  alternative + Q10 qui a répondu faux). Chaque groupe
+  demande une V2 différente.
+- **Les pseudo-abstentions sont un piège méthodologique.** Sans
+  le filtre « pas de chiffre significatif », Q10 (`16,51 %, ...
+  mais pas disponible`) aurait pu être reclassée abstention au
+  lieu de `fausse_recall_ok`.
+
+### Fichiers modifiés dans la session
+
+- `.github/workflows/tests.yml` : `ubuntu-latest` → `ubuntu-24.04`.
+- `scripts/score.py` : nouveau mode `--mode compare`,
+  `est_abstention` basé sur abstention large + absence de chiffre,
+  `classer_b0`, `scorer_question_b0`, `CLASSES_B0`, synthèse
+  par catégorie, SVG sans matplotlib.
+- `tests/test_score.py` : +12 tests (`est_abstention_*`,
+  `classer_b0_*`, filtrage annotations par `run_id`).
+- `data/benchmark/annotations_texte.jsonl` : champ `run_id` par
+  ligne, +3 annotations B0-libre.
+- `results/scores_compare.jsonl` : nouveau, 93 lignes.
+- `results/comparison_B0_V1.svg` : nouveau, graphique groupé.
+- `scripts/evaluate_v1.py` : commentaire header élargi (« calcul
+  OU comparaison »).
