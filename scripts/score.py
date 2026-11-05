@@ -412,10 +412,12 @@ def est_abstention(answer_text: str) -> bool:
     serait classee a tort comme abstention. Le filtrage par
     chiffre significatif resout ce cas.
 
-    Garantit que V1 reste classe comme avant : les 4 abstentions
-    V1 sont toutes au format canonique "donnee non disponible"
-    (capture par la branche stricte de est_abstention_large) et
-    n'ont pas de chiffre significatif.
+    Garantit que V1 reste classe comme avant : les 14 abstentions
+    V1 (4 abstention_correcte + 4 abstention_a_tort_recall_ok +
+    6 abstention_a_tort_recall_ko) utilisent toutes la forme
+    canonique "donnee non disponible" imposee par SYSTEM_INSTRUCTION,
+    captee par la branche stricte de est_abstention_large, et aucune
+    ne contient de chiffre significatif.
     """
     from scripts.evaluate_b0 import (
         contient_chiffre_significatif, est_abstention_large,
@@ -914,6 +916,62 @@ def _ecrire_svg_comparaison(
     path.write_text("\n".join(svg), encoding="utf-8")
 
 
+def diagnostiquer_v1(scores_v1: list[dict]) -> dict:
+    """Separe les echecs V1 en 3 groupes DISJOINTS + 1 observation
+    distincte.
+
+    Les 3 groupes d'echecs (leur union = nb_echecs) :
+    - `problemes_recherche` : abstention_a_tort ET valeurs absentes
+      du top-5 (recall KO + vdc False/None). V2 doit ameliorer le
+      retrieval.
+    - `abstentions_avec_valeurs` : abstention_a_tort ET valeurs
+      presentes dans le top-5 (vdc=True), que recall@5 soit OK ou
+      KO. Le modele a la matiere mais refuse. V2 doit ameliorer
+      le prompt / la formule du cours.
+    - `fausses` : reponse donnee mais mauvaise (toutes classes
+      fausse_* et reponse_a_tort).
+
+    Point distinct, HORS echecs :
+    - `juste_malgre_recall_ko` : classe=juste ET recall@5=False.
+      Le modele repond juste meme si la page attendue stricte n'est
+      pas dans le top-5 (typique des comparaisons avec les 2 valeurs
+      sur la meme page mais via plusieurs colonnes). Interessant
+      pour la calibration de Recall@k comme proxy de la qualite.
+    """
+    pb_recherche: list[str] = []
+    abstentions_valeurs: list[str] = []
+    fausses: list[str] = []
+    juste_malgre_recall_ko: list[str] = []
+
+    for s in scores_v1:
+        classe = s["classe"]
+        qid = s["question_id"]
+        vdc = s.get("valeurs_dans_contexte")
+        rec5 = (s.get("recall") or {}).get("recall_at_5")
+
+        if classe in ("abstention_a_tort_recall_ok",
+                        "abstention_a_tort_recall_ko"):
+            if vdc is True:
+                abstentions_valeurs.append(qid)
+            else:
+                pb_recherche.append(qid)
+        elif classe in ("fausse_recall_ok", "fausse_recall_ko",
+                         "reponse_a_tort"):
+            fausses.append(qid)
+        elif classe == "juste" and rec5 is False:
+            juste_malgre_recall_ko.append(qid)
+
+    nb_echecs = (len(pb_recherche) + len(abstentions_valeurs)
+                  + len(fausses))
+    return {
+        "problemes_recherche": pb_recherche,
+        "abstentions_avec_valeurs": abstentions_valeurs,
+        "fausses": fausses,
+        "juste_malgre_recall_ko": juste_malgre_recall_ko,
+        "nb_echecs": nb_echecs,
+    }
+
+
 def mode_compare(questions: list[dict]) -> int:
     """Score B0-strict, B0-libre et V1 sur le MEME benchmark et
     produit : results/scores_compare.jsonl + tableau + SVG."""
@@ -1035,31 +1093,27 @@ def mode_compare(questions: list[dict]) -> int:
     print(f"  {'TOTAL':<16}  {tt_b0s:>10}  {tt_b0l:>10}  "
           f"{tt_v1:>10}  {tt_tot:>8}")
 
-    # Separation : problemes de recherche (recall KO sans valeurs
-    # dans contexte) vs abstentions avec valeurs presentes.
+    # Separation des echecs V1.
+    diag = diagnostiquer_v1(scores_v1)
     print()
-    print("=== Diagnostic V1 : problemes de recherche vs abstentions avec valeurs ===")
-    pb_recherche: list[str] = []
-    abstention_valeurs: list[str] = []
-    for s in scores_v1:
-        if s["classe"] == "abstention_a_tort_recall_ok":
-            abstention_valeurs.append(s["question_id"])
-        elif (s["classe"] == "abstention_a_tort_recall_ko"
-              and s["valeurs_dans_contexte"] is not True):
-            pb_recherche.append(s["question_id"])
-    print(f"  Problemes de recherche (recall KO ET valeurs absentes) : "
-          f"{pb_recherche}")
-    print(f"  Abstentions avec valeurs presentes dans le top-5 : "
-          f"{abstention_valeurs}")
-    # Les Q recall KO mais valeurs presentes (ex. Q23 par la p.52).
+    print(f"=== Diagnostic V1 : {diag['nb_echecs']} echecs decomposes ===")
+    print(f"  Problemes de recherche "
+          f"({len(diag['problemes_recherche'])}) : recall@5 KO + "
+          f"valeurs absentes du top-5")
+    print(f"    {sorted(diag['problemes_recherche'])}")
+    print(f"  Abstentions avec valeurs presentes "
+          f"({len(diag['abstentions_avec_valeurs'])}) : le modele a "
+          f"la matiere (recall OK ou vdc=True) mais s'abstient")
+    print(f"    {sorted(diag['abstentions_avec_valeurs'])}")
+    print(f"  Reponses fausses ({len(diag['fausses'])}) : reponse donnee, "
+          f"mauvaise valeur")
+    print(f"    {sorted(diag['fausses'])}")
     print()
-    recall_ko_valeurs_ok = [
-        s["question_id"] for s in scores_v1
-        if s["recall"]["recall_at_5"] is False
-        and s["valeurs_dans_contexte"] is True
-    ]
-    print(f"  Recall@5 KO MAIS valeurs dans contexte (via page alternative) : "
-          f"{recall_ko_valeurs_ok}")
+    print(f"  (Point distinct) Justes malgre recall@5 KO strict "
+          f"({len(diag['juste_malgre_recall_ko'])}) : page attendue "
+          f"absente mais valeurs lues dans le top-5 via meme page "
+          f"(multi-colonnes)")
+    print(f"    {sorted(diag['juste_malgre_recall_ko'])}")
 
     # SVG.
     _ecrire_svg_comparaison(bons_par_run, totaux, COMPARISON_SVG)

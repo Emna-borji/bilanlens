@@ -1723,10 +1723,14 @@ False=1 (Q30), N/A=9 (5 texte_annexes + 4 sans_reponse).
   (Q02, Q06, Q14, Q19). C'est le signal le plus clair pour la
   V2 : revoir la consigne stricte ou enrichir le prompt avec la
   définition des formules du cours.
-- **Q07, Q20, Q23, Q28** : recall@5 KO mais `valeurs_dans_
-  contexte=True`. Elles entreraient dans le top-10 pour trois
-  d'entre elles (Q23 page 4 à rang 6 ; cf. retrieval_top20).
-  **Recall@10 = 24/27 (89 %)** le confirme.
+- **Q07, Q20, Q23, Q28** : recall@5 KO strict mais `valeurs_dans_
+  contexte=True`. À séparer en deux : (a) **Q07, Q20 répondent
+  juste** (classe `juste`) parce que les 2 valeurs de la
+  comparaison sont sur la même page via plusieurs colonnes ;
+  (b) **Q23, Q28 s'abstiennent** malgré la matière présente
+  (Q23 : résultat net lisible page 52 au rang 4 sous
+  « Résultat comptable après impôts »). **Recall@10 = 24/27
+  (89 %)** le confirme pour Q23 : sa page 4 est au rang 6.
 - **Pas un seul `fausse_recall_ko` et pas un seul `reponse_a_
   tort`** : quand Flash-Lite n'a pas la matière, il abstient. Le
   RAG a bien neutralisé les 4 hallucinations numériques
@@ -1748,11 +1752,12 @@ False=1 (Q30), N/A=9 (5 texte_annexes + 4 sans_reponse).
 ### Ce que j'ai appris
 
 - **La métrique Recall@k seule ne suffit pas.** Deux Q
-  (Q07, Q20) ont recall KO mais `valeurs_dans_contexte=True` et
-  le modèle y répond juste. Trois autres (Q23, Q28, Q30) ont le
-  même profil mais s'abstiennent. La question de recherche pour
-  la V2 : comment faire monter les pages des `intermediate_
-  values` dans le top-5 ?
+  (Q07, Q20) ont recall@5 KO strict mais `valeurs_dans_
+  contexte=True` et le modèle y répond juste (comparaisons avec
+  2 valeurs sur la même page via multi-colonnes). Deux autres
+  (Q23, Q28) ont le même profil mais s'abstiennent. Une
+  question (Q30) a recall KO ET valeurs absentes. Trois
+  comportements distincts derrière « recall@5 KO ».
 - **Le passage de k=5 à k=10 ferait monter le recall de
   70 % à 89 %.** Compromis à mesurer en V2 : avec k=10, risque
   d'augmenter les hallucinations de type Q10 (contexte plus
@@ -1826,8 +1831,21 @@ non comparable sur la consigne.
 | sans_reponse | 4 | 4 | 4 | 4 |
 | **TOTAL** | **4/31** | **5/31** | **20/31** | 31 |
 
-Le RAG apporte un gain **x5** sur le total par rapport à B0-strict
-et **x4** sur B0-libre.
+**Sur les 27 questions avec réponse attendue (hors sans_reponse) :**
+
+| Run | Justes | Fausses |
+|---|---|---|
+| B0-strict | 0 | 0 (tout en abstention) |
+| B0-libre | 1 | 6 |
+| V1 | 16 | 1 |
+
+**Attention à la comparaison** : B0-strict et V1 partagent
+exactement `SYSTEM_INSTRUCTION` (même consigne stricte, seul le
+TEMPLATE_USER change) → **c'est la seule paire qui isole
+rigoureusement l'effet du RAG**. B0-libre utilise un prompt
+système différent (`SYSTEM_INSTRUCTION_B0_LIBRE`, sans consigne
+d'abstention) : l'écart V1 vs B0-libre mélange effet du RAG ET
+effet du prompt, à ne pas lire comme une mesure pure.
 
 **V1 — Recall@k (sur 27 Q avec page attendue) et MRR** :
 
@@ -1854,23 +1872,42 @@ Sur les 27 Q non-sans_reponse, Flash-Lite libre répond pour
 seulement 7 (1 juste + 6 fausses) et s'abstient pour 20. Le
 taux d'hallucination conditionnel ≈ 86 % (6/7).
 
-### Séparation des problèmes V1
+### Séparation des 11 échecs V1
 
-**Problèmes de recherche** (recall@5 KO ET valeurs absentes du
-top-5) — à traiter en V2 par le retrieval :
+Les 20 « bons » (16 justes + 4 abstentions correctes) laissent
+**11 échecs** à expliquer, décomposables en 3 groupes disjoints :
+
+**(a) Problèmes de recherche (4)** — recall@5 KO ET valeurs
+absentes du top-5. À traiter en V2 côté retrieval :
 `monoprix_consolide_2024_12`, `sfbt_2024_21`,
 `ciments_bizerte_2024_25`, `delice_holding_2024_30`.
 
-**Abstentions avec valeurs présentes dans le top-5** — à traiter
-en V2 par le prompt / la formule du cours, pas par le
-retrieval :
-- `sotuver_2024_02`, `sotuver_2024_06`, `monoprix_2024_14`,
-  `sfbt_2024_19` : recall@5 OK + valeurs dans contexte, modèle
-  s'abstient quand même.
-- `ciments_bizerte_2024_23`, `delice_holding_2024_28` : recall@5
-  KO strict mais valeurs dans contexte via **page alternative**
-  (p. 52 « Résultat comptable après impôts » pour Q23). Le
-  modèle a la matière mais pas sous l'intitulé qu'il attend.
+**(b) Abstentions avec valeurs présentes dans le top-5 (6)**
+— le modèle a la matière mais refuse. À traiter en V2 côté
+prompt / formule du cours :
+- recall@5 OK : `sotuver_2024_02`, `sotuver_2024_06`,
+  `monoprix_2024_14`, `sfbt_2024_19`.
+- recall@5 KO strict mais valeurs dans contexte via **page
+  alternative** : `ciments_bizerte_2024_23`,
+  `delice_holding_2024_28`.
+- **Hypothèse à tester (pas un fait) pour Q23 et Q28** :
+  Flash-Lite pourrait ne pas reconnaître la valeur sous un
+  libellé différent (Q23 : « RESULTAT COMPTABLE APRES IMPÔTS »
+  page 52 au lieu de « Résultat net de l'exercice » page 4).
+  La confirmation demanderait soit un rerun avec prompt
+  pédagogique explicitant les alias, soit une analyse par
+  attention des chunks cités.
+
+**(c) Réponse fausse (1)** — `monoprix_consolide_2024_10` :
+recall OK, valeurs dans contexte, mais calcul sémantique
+faux (16,51 % au lieu de 13,03 %).
+
+**Point distinct (pas un échec) : justes malgré recall@5 KO
+(2)** — `sotuver_2024_07`, `sfbt_2024_20`. Comparaisons où
+les 2 valeurs vivent sur la même page via plusieurs colonnes.
+Important pour la calibration : Recall@k en couple
+(doc, page) est un proxy imparfait de la qualité quand les
+valeurs sont co-localisées.
 
 ### Décisions prises
 
@@ -1884,20 +1921,21 @@ retrieval :
 
 ### Ce que j'ai appris
 
-- **B0-strict = 4/31 et B0-libre = 5/31** : sans RAG, un LLM
-  généraliste ne peut pas répondre aux questions BVMT. Le passage
-  à 20/31 avec V1 (x5) démontre que le gain vient bien du
-  retrieval, pas d'un biais du scoring.
+- **B0-strict vs V1 à prompt système identique.** Sur les 27 Q
+  avec réponse attendue : 0 juste / 0 fausse en B0-strict contre
+  16 justes / 1 fausse en V1. C'est la seule paire qui isole
+  rigoureusement l'effet du RAG (B0-libre a un prompt différent,
+  à ne pas comparer directement). La réponse juste B0-libre
+  (Q08) est du pur hasard pré-entraînement : « aucune source »
+  noté dans l'annotation.
 - **Le prompt système change le mode d'échec, pas la justesse.**
   B0-strict s'abstient partout (sauf sans_reponse), B0-libre
-  invente 6 fois et s'abstient 20 fois. La seule réponse juste
-  B0-libre (Q08) est du pur hasard pré-entraînement : « aucune
-  source » noté dans l'annotation.
-- **Séparer recall et exactitude a de la valeur.** V1 a 10 Q
-  qui échouent : 4 problèmes de recherche + 6 problèmes de
-  lecture (4 abstentions avec valeurs + 2 recall KO via page
-  alternative + Q10 qui a répondu faux). Chaque groupe
-  demande une V2 différente.
+  invente 6 fois et s'abstient 20 fois.
+- **Séparer recall et exactitude a de la valeur.** V1 a 11
+  échecs : 4 problèmes de recherche + 6 abstentions avec
+  valeurs présentes + 1 réponse fausse (Q10). Chaque groupe
+  demande une V2 différente ; Q07 et Q20 sont justes malgré
+  recall@5 KO strict et ne comptent pas dans les échecs.
 - **Les pseudo-abstentions sont un piège méthodologique.** Sans
   le filtre « pas de chiffre significatif », Q10 (`16,51 %, ...
   mais pas disponible`) aurait pu être reclassée abstention au

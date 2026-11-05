@@ -431,6 +431,106 @@ def test_classes_b0_exclusives():
 
 
 # ---------------------------------------------------------------------------
+# 7.bis. diagnostiquer_v1 : separation des echecs V1
+# ---------------------------------------------------------------------------
+def _score(qid, classe, vdc=None, recall5=None):
+    """Minimal pour `diagnostiquer_v1` : juste les champs utilises."""
+    return {
+        "question_id": qid,
+        "classe": classe,
+        "valeurs_dans_contexte": vdc,
+        "recall": {"recall_at_5": recall5},
+    }
+
+
+def test_diagnostiquer_v1_separe_recherche_et_prompt():
+    """Les abstentions a tort se separent selon valeurs_dans_contexte,
+    peu importe recall@5 (Q23 : recall KO + vdc True -> abstention
+    avec valeurs, pas probleme de recherche)."""
+    from scripts.score import diagnostiquer_v1
+
+    scores = [
+        # 4 abstentions avec vdc True (recall OK ou KO : meme bucket).
+        _score("Q02", "abstention_a_tort_recall_ok", vdc=True, recall5=True),
+        _score("Q06", "abstention_a_tort_recall_ok", vdc=True, recall5=True),
+        _score("Q14", "abstention_a_tort_recall_ok", vdc=True, recall5=True),
+        _score("Q19", "abstention_a_tort_recall_ok", vdc=True, recall5=True),
+        _score("Q23", "abstention_a_tort_recall_ko", vdc=True, recall5=False),
+        _score("Q28", "abstention_a_tort_recall_ko", vdc=True, recall5=False),
+        # 4 problemes de recherche (abstention + vdc != True).
+        _score("Q12", "abstention_a_tort_recall_ko", vdc=None, recall5=False),
+        _score("Q21", "abstention_a_tort_recall_ko", vdc=None, recall5=False),
+        _score("Q25", "abstention_a_tort_recall_ko", vdc=None, recall5=False),
+        _score("Q30", "abstention_a_tort_recall_ko", vdc=False, recall5=False),
+        # 1 fausse (Q10).
+        _score("Q10", "fausse_recall_ok", vdc=True, recall5=True),
+        # 2 justes malgre recall KO (Q07, Q20).
+        _score("Q07", "juste", vdc=True, recall5=False),
+        _score("Q20", "juste", vdc=True, recall5=False),
+        # Justes "normaux" (recall OK) : ne doivent apparaitre nulle part.
+        _score("Q01", "juste", vdc=True, recall5=True),
+    ]
+
+    diag = diagnostiquer_v1(scores)
+    assert sorted(diag["problemes_recherche"]) == ["Q12", "Q21", "Q25", "Q30"]
+    assert sorted(diag["abstentions_avec_valeurs"]) == [
+        "Q02", "Q06", "Q14", "Q19", "Q23", "Q28",
+    ]
+    assert sorted(diag["fausses"]) == ["Q10"]
+    assert sorted(diag["juste_malgre_recall_ko"]) == ["Q07", "Q20"]
+    # nb_echecs = 4 recherche + 6 abstentions-valeurs + 1 fausse = 11.
+    assert diag["nb_echecs"] == 11
+
+
+def test_diagnostiquer_v1_juste_malgre_recall_ko_hors_echecs():
+    """`juste_malgre_recall_ko` n'est PAS un echec, donc pas compte
+    dans `nb_echecs`."""
+    from scripts.score import diagnostiquer_v1
+
+    scores = [
+        _score("Q07", "juste", vdc=True, recall5=False),
+        _score("Q20", "juste", vdc=True, recall5=False),
+    ]
+    diag = diagnostiquer_v1(scores)
+    assert diag["juste_malgre_recall_ko"] == ["Q07", "Q20"]
+    assert diag["nb_echecs"] == 0
+
+
+def test_diagnostiquer_v1_fichier_reel():
+    """Verifie que sur le run V1 enregistre, le diagnostic donne
+    exactement 4+6+1 = 11 echecs + 2 juste_malgre_recall_ko."""
+    import json
+    from pathlib import Path
+
+    from scripts.score import RUN_ID_V1, diagnostiquer_v1
+
+    racine = Path(__file__).resolve().parent.parent
+    scores = []
+    for l in open(racine / "results" / "scores_compare.jsonl",
+                   encoding="utf-8"):
+        rec = json.loads(l)
+        if rec.get("provenance") == "v1" and rec.get("run_id") == RUN_ID_V1:
+            scores.append(rec)
+    assert len(scores) == 31
+
+    diag = diagnostiquer_v1(scores)
+    assert sorted(diag["problemes_recherche"]) == sorted([
+        "monoprix_consolide_2024_12", "sfbt_2024_21",
+        "ciments_bizerte_2024_25", "delice_holding_2024_30",
+    ])
+    assert sorted(diag["abstentions_avec_valeurs"]) == sorted([
+        "sotuver_2024_02", "sotuver_2024_06",
+        "monoprix_2024_14", "sfbt_2024_19",
+        "ciments_bizerte_2024_23", "delice_holding_2024_28",
+    ])
+    assert sorted(diag["fausses"]) == ["monoprix_consolide_2024_10"]
+    assert sorted(diag["juste_malgre_recall_ko"]) == sorted([
+        "sotuver_2024_07", "sfbt_2024_20",
+    ])
+    assert diag["nb_echecs"] == 11
+
+
+# ---------------------------------------------------------------------------
 # 7. Integration scorer_question avec annotations
 # ---------------------------------------------------------------------------
 def test_scorer_question_texte_annexes_annotation_juste_incomplete(tmp_path):
