@@ -2243,3 +2243,161 @@ cas spécifique de perte de direction, pas une hallucination).
 - `results/v1_1.jsonl` : 31 lignes, run V1.1.
 - `results/scores_v1_1.jsonl` : 31 lignes, scoring V1.1.
 
+
+---
+
+## 2026-11-06 (soir) — V1.2 : V1.1 + 2 règles anti-ambiguïté
+
+### Ce que j'ai fait
+
+- Nouveau `TEMPLATE_V1_2_USER` = `TEMPLATE_V1_1_USER` + deux règles
+  issues de l'analyse post-hoc des erreurs V1.1 :
+  - R1 : « Dans une formule d'autonomie financière, le total passif
+    désigne le total des capitaux propres et des passifs (total
+    du bilan). » → cible Q02/Q10/Q19 qui calculaient CP/dettes.
+  - R2 : « Pour une variation ou une comparaison, indique aussi le
+    sens (augmentation ou diminution). » → cible Q07 qui avait
+    perdu la direction en V1.1.
+- `SYSTEM_INSTRUCTION` reste byte-à-byte identique à V1 et B0-strict.
+  Schéma JSON inchangé.
+- Nouveau `scripts/evaluate_v1_2.py` : run V1.2 réutilise les chunks
+  V1 (0 appel Chroma, 0 API embeddings). Écrit dans
+  `results/v1_2.jsonl` sous `v1_2_gemini35flashlite_k5_
+  634426d2b6bfde4e`. Les runs V1 et V1.1 ne sont pas modifiés.
+- Nouveau mode `scripts/score.py --mode v1-2` qui compare V1.1 vs
+  V1.2 Q par Q.
+- 2 annotations texte V1.2 ajoutées (Q04 identique byte-à-byte à
+  V1.1 ; Q08 formulé différemment mais même fond → `juste`,
+  `complete=true` validé par l'utilisateur).
+
+### Résultats V1.1 → V1.2
+
+**Par classe :**
+
+| Classe | V1.1 | V1.2 | Δ |
+|---|---|---|---|
+| `juste` | 18 | **20** | +2 |
+| `fausse_recall_ok` | 3 | **0** | −3 |
+| `fausse_recall_ko` | 1 | **0** | −1 |
+| `abstention_a_tort_recall_ok` | 1 | 2 | +1 |
+| `abstention_a_tort_recall_ko` | 4 | 5 | +1 |
+| `abstention_correcte` | 4 | 4 | 0 |
+| `reponse_a_tort` | 0 | 0 | 0 |
+
+**Par catégorie :**
+
+| Catégorie | V1.1 | V1.2 |
+|---|---|---|
+| extraction | 8/9 | 8/9 |
+| **calcul** | 3/7 | **4/7** |
+| **comparaison** | 5/6 | **6/6** |
+| texte_annexes | 2/5 | 2/5 |
+| sans_reponse | 4/4 | 4/4 |
+| **TOTAL** | **22/31** | **24/31** |
+
+**Justes parmi les réponses données (hors abstention) :**
+
+| Run | Justes / Réponses données | % |
+|---|---|---|
+| V1.1 | 18 / 22 | 82 % |
+| **V1.2** | **20 / 20** | **100 %** |
+
+**Zéro nouvelle réponse fausse en V1.2.** Quand V1.2 répond, elle
+a raison. Les erreurs résiduelles se traduisent en abstention,
+pas en invention.
+
+### Focus Q02, Q06, Q07, Q10, Q19 (cibles explicites des règles)
+
+| qid | V1.1 | V1.2 | Verdict |
+|---|---|---|---|
+| **Q02** (34,53 %) | 52,74 % | **34,53 %** | ✅ règle R1 marche |
+| Q06 (1,9) | abstention | abstention | inchangé (inexpliquée) |
+| **Q07** (dim. 18,5 M) | « 18 577 651 TND » | **« diminution de 18 577 651 TND entre 2023 et 2024 »** | ✅ règle R2 marche |
+| **Q10** (13,03 %) | 16,51 % | **13,03 %** | ✅ règle R1 marche |
+| **Q19** (74,43 %) | 291,07 % | **74,43 %** | ✅ règle R1 marche |
+
+### Régressions V1.1 → V1.2 à signaler
+
+| qid | V1.1 | V1.2 |
+|---|---|---|
+| **Q14** monoprix (0,93 %) | « 0,93 % » ✅ | **abstention** |
+| **Q23** ciments (−11,52 %) | « −11,52 % » ✅ | **abstention** |
+
+Ces 2 Q ne sont pas des autonomies financières (R1 ne s'applique
+pas) et ne sont pas des variations (R2 ne s'applique pas non plus).
+Pas d'explication directe par les règles. Hypothèse (à vérifier) :
+la densité de contraintes dans TEMPLATE_V1_2_USER rend le modèle
+plus prudent sur tous les calculs, même ceux qui n'étaient pas
+ciblés. Un test V1.3 avec les règles séparées (R1 seule vs R2
+seule) trancherait, mais **ce n'est pas lancé ici** (pas de V1.3
+sans accord utilisateur).
+
+### Contrôle anti-invention ✅
+
+- **Q05, Q16, Q26, Q31** (sans_reponse) : 4/4 abstentions correctes.
+- **0 reponse_a_tort**, **0 fausse** sur tous les runs.
+- La trajectoire V1 → V1.1 → V1.2 : les erreurs de type
+  « fausse » disparaissent au profit d'abstentions.
+
+### Avertissement méthodologique important
+
+**Les deux règles de V1.2 ont été écrites APRÈS avoir vu les
+erreurs de V1.1 sur ce benchmark**. Ce sont des règles fit
+post-hoc, pas des règles dérivées d'un principe indépendant :
+- R1 (« total passif = total du bilan ») répond à une convention
+  pédagogique du cours de finance, pas à une norme comptable
+  généralement vraie.
+- R2 (« indiquer le sens ») corrige un artefact de la consigne
+  V1.1 (« donne uniquement le résultat final »).
+
+**Cette calibration doit être revalidée sur de nouvelles questions
+de benchmark avant toute conclusion de généralisation.** À
+l'échelle de 31 Q et 4 autonomies financières (Q02, Q10, Q19 +
+le cas déjà juste Q19 sfbt), le pattern des règles peut être un
+hasard de l'échantillon. Une version du benchmark avec au moins
+10 nouvelles autonomies financières sur d'autres exercices /
+d'autres entreprises est nécessaire pour trancher.
+
+### Décisions prises
+
+| Décision | Justification |
+|---|---|
+| V1.2 garde TEMPLATE_V1_1_USER + 2 règles | Préserve la cumulativité : V1.2 corrige V1.1 sans tout casser |
+| Pas de V1.3 (R1 seule / R2 seule) | Pas lancé sans accord utilisateur |
+| Annotation Q04/Q08 V1.2 avec texte différent pour Q08 | Fond identique, même verdict applicable |
+| Journal signale explicitement le fit post-hoc | Avertissement méthodologique pour toute lecture ultérieure |
+
+### Ce que j'ai appris
+
+- **La règle « total passif = total du bilan » corrige 3/3
+  autonomies financières.** C'est le signe qu'une ambiguïté
+  terminologique du benchmark existait et que le modèle pouvait
+  être guidé sans tricher. Mais il faut noter que cette
+  règle est un **choix de convention** (celle du cours) ; les
+  commissaires aux comptes de certains rapports utilisent l'autre
+  définition (« Total passifs » = dettes).
+- **R2 corrige exactement Q07.** Les 5 autres comparaisons
+  conservaient déjà leur direction en V1.1 ; R2 ne les a pas
+  dégradées.
+- **Les régressions Q14/Q23 sont inexpliquées par les règles.**
+  Elles n'étaient ni autonomie financière, ni comparaison. La
+  piste « prompt trop dense » est plausible mais non vérifiée.
+  Un test V1.3 avec règles séparées éclaircirait.
+- **Score des réponses données : 100 % en V1.2.** Le modèle ne
+  propose plus de mauvaise valeur : soit il répond juste, soit
+  il s'abstient. Dans un cadre de production où une mauvaise
+  réponse coûte plus cher qu'une abstention, c'est une propriété
+  recherchée.
+
+### Fichiers de cette session
+
+- `bilanlens/prompts.py` : `TEMPLATE_V1_2_USER`,
+  `prompt_version_v1_2()`.
+- `scripts/evaluate_v1_2.py` : nouveau (0 Chroma, 0 embedding).
+- `scripts/score.py` : `RUN_ID_V1_2` dynamique, `mode_v1_2`,
+  focus sur Q02/Q06/Q07/Q10/Q19.
+- `tests/test_evaluate_v1_2.py` : 5 tests.
+- `data/benchmark/annotations_texte.jsonl` : +2 entrées V1.2.
+- `results/v1_2.jsonl` (31 lignes) + `results/scores_v1_2.jsonl`
+  (31 lignes).
+
