@@ -3205,3 +3205,195 @@ Suite totale : **351 passed, 3 deselected** (zéro régression).
 Ne pas coder tant que le feu vert n'est pas donné.
 
 
+
+---
+
+## 2026-11-06 (soir, 3) — V2 run LLM + score V1.2 vs V2
+
+### Ce que j'ai fait
+
+Lancé une seule fois le pipeline V2 (`v2.1 / hybride_filtre` +
+prompt V1.2 inchangé) sur les 31 Q du benchmark, Flash-Lite,
+temperature = 0. Scoré le run avec `score.py --mode v2` : mêmes
+règles que V1.2, comparaison classe par classe, categorie,
+valeurs_dans_contexte, 8 Q cibles, 4 sans_reponse, nouvelles
+fausses.
+
+- 1 seul run LLM, 31 appels Flash-Lite.
+- 3 annotations manuelles versionnées pour les texte_annexes
+  avec réponse donnée (Q04, Q08, Q25), validées par l'utilisateur.
+
+### Résultats globaux
+
+| | V1.2 | V2 | Δ |
+|---|---|---|---|
+| Classes « juste » | 20 | 22 | +2 |
+| Abstentions correctes | 4 | 4 | ± |
+| Fausses | 0 | 1 | +1 |
+| Abstentions à tort | 7 | 4 | −3 |
+| **Bons résultats (juste + abst. correcte)** | **24/31** | **26/31** | **+2** |
+
+Par catégorie (bons résultats = juste OR abstention_correcte) :
+
+| Catégorie | V1.2 | V2 |
+|---|---|---|
+| extraction (9) | 8/9 | 8/9 |
+| calcul (7) | 4/7 | 5/7 |
+| comparaison (6) | 6/6 | 6/6 |
+| texte_annexes (5) | 2/5 | 3/5 |
+| sans_reponse (4) | 4/4 | 4/4 |
+| **TOTAL** | **24/31** | **26/31** |
+
+Recall@k et MRR (retrieval V2.1/hybride_filtre) :
+
+| | V1.2 | V2 |
+|---|---|---|
+| Recall@1 | 10/27 | **15/27** |
+| Recall@3 | 14/27 | **20/27** |
+| Recall@5 | 19/27 | **22/27** |
+| Recall@10 | 24/27 | **26/27** |
+| Recall@20 | 25/27 | **27/27** (100 %) |
+| MRR | 0.543 | **0.714** |
+
+`valeurs_dans_contexte` (True/False/None) : V1.2 = 21/1/9 ;
+V2 = 21/1/9 (identique).
+
+### Justes parmi les réponses données
+
+- **V1.2 : 20 / 20 = 100 %.** Aucune fausse. Le prompt V1.2 est
+  prudent : quand le modèle répond, il répond juste.
+- **V2 : 22 / 23 = 95,7 %.** 1 fausse (Q13). V2.1 descend un
+  chunk pertinent de Q13 hors top-5 et pousse un chunk
+  trompeur au top ; le LLM répond une valeur en page 8 (total
+  des produits d'exploitation) au lieu de la page 5 (revenus
+  individuels).
+
+### 5 changements de classe V1.2 → V2
+
+| qid | cat | V1.2 | V2 | Interprétation |
+|---|---|---|---|---|
+| sotuver_2024_06 | calcul | abstention_a_tort_recall_**ok** | **juste** | Prompt V1.2 inchangé, retrieval V2.1 pousse la bonne page → sortie « 1,90 » (ratio = 190 %). |
+| monoprix_consolide_2024_12 | texte_annexes | abstention_a_tort_recall_ko | abstention_a_tort_recall_**ok** | Retrieval amélioré (page 13 passe de rang 6 à rang 1), mais LLM abstient toujours malgré que la réponse soit INTÉGRALEMENT dans le chunk rang 1. **Le prompt V1.2 figé est le verrou, pas le retrieval.** |
+| monoprix_2024_13 | extraction | juste | **fausse_recall_ko** | Perte prévue par le benchmark. V2.1 hybride_filtre descend la page 5 hors top-5 ; le LLM lit « Revenus et autres » page 8 (746 256 912 = total produits d'exploitation). Ne pas corriger. |
+| ciments_bizerte_2024_25 | texte_annexes | abstention_a_tort_recall_ko | **juste** | BM25 filtré V2.1 remonte la page 14 au rang 1 → V2 sort « 900 000 tonnes par an ». Validé juste/complete=true. |
+| delice_holding_2024_30 | extraction | abstention_a_tort_recall_ko | **juste** | V2.1 remonte la page attendue dans le top-5 (rang 4) → V2 sort le bon montant « 32 944 357 dinars ». |
+
+Net LLM : **+3 gains / −1 perte = +2**.
+
+### Focus 8 Q demandées
+
+| qid | V1.2 classe | V2 classe | vdc V1.2 / V2 |
+|---|---|---|---|
+| Q06 sotuver_2024_06 (calcul) | abstention_a_tort_recall_ok | **juste** | True / True |
+| Q12 monoprix_consolide_12 (texte_annexes) | abst._a_tort_recall_ko | abst._a_tort_recall_**ok** | None / None |
+| Q13 monoprix_13 (extraction) | juste | **fausse_recall_ko** | True / **False** |
+| Q14 monoprix_14 (calcul) | abst._a_tort_recall_ok | abst._a_tort_recall_ok | True / True |
+| Q21 sfbt_21 (texte_annexes) | abst._a_tort_recall_ko | abst._a_tort_recall_ko | None / None |
+| Q23 ciments_23 (calcul) | abst._a_tort_recall_ko | abst._a_tort_recall_ko | True / True |
+| Q25 ciments_25 (texte_annexes) | abst._a_tort_recall_ko | **juste** | None / None |
+| Q30 delice_30 (extraction) | abst._a_tort_recall_ko | **juste** | **False** / **True** |
+
+### Les 4 sans_reponse (contrôle anti-invention)
+
+Toutes restent `abstention_correcte` en V2, comme en V1.2 :
+
+- Q05 sotuver_2024_05 → abstention_correcte
+- Q16 monoprix_2024_16 → abstention_correcte
+- Q26 ciments_bizerte_2024_26 → abstention_correcte
+- Q31 delice_holding_2024_31 → abstention_correcte
+
+**Aucune invention V2.** Le gain retrieval ne corrompt pas le
+comportement de refus.
+
+### Nouvelles fausses V2
+
+- **monoprix_2024_13** : juste → fausse_recall_ko. Unique
+  régression. Prévue par le benchmark V2.1 (le filtre entreprise
+  + BM25 descend la page 5 hors top-5). Perte reconnue, non
+  corrigée (prompt V1.2 et pipeline retrieval V2.1 non touchés).
+
+Pas d'autre nouvelle fausse. Pas de reponse_a_tort.
+
+### Observation sur Q12 (demandée par l'utilisateur)
+
+Q12 demande « quelles filiales ont été exclues du périmètre de
+consolidation et pour quelle raison ? ». La référence : SNMVT
+INTERNATIONAL et UNITED DECS, raison = fermeture magasins Libye
+2015 (NCT 35 §11.b).
+
+- **V2 retrieval : page 13 au rang 1.** Le chunk rang 1
+  contient INTÉGRALEMENT la réponse (noms des filiales,
+  pourcentages, année d'exclusion, raison Libye, référence
+  NCT 35 §11.b).
+- **V2 LLM : « donnée non disponible ».** Le modèle refuse
+  malgré que toute la matière soit dans le contexte.
+
+C'est la preuve que **V2.1 corrige le retrieval mais pas le
+prompt**. Q12 passe de `abstention_a_tort_recall_ko` (V1.2 : page
+non récupérée) à `abstention_a_tort_recall_ok` (V2 : page
+récupérée, modèle abstient). Le verrou restant est le prompt
+V1.2 figé : il est très conservateur sur les questions texte en
+« quelles X et pour quelle raison ? » quand le texte source est
+long et narratif.
+
+Un futur prompt V1.3 pourrait cibler ce pattern. Hors scope de
+V2 (prompt verrouillé par décision).
+
+### Annotations manuelles ajoutées à `annotations_texte.jsonl`
+
+Trois annotations versionnées sous le run_id
+`v2_gemini35flashlite_k5_634426d2b6bfde4e_v2_1_hybride_filtre` :
+
+- **Q04 sotuver_2024_04** : statut=juste, complete=**false**.
+  Élément manquant : provision pour dépréciation sur articles
+  à rotation lente / obsolètes.
+- **Q08 sotuver_2024_08** : statut=juste, complete=**true**.
+  NCT 11 décrit le TRAITEMENT du changement, pas le motif :
+  pas un élément manquant de la réponse au « pourquoi ».
+- **Q25 ciments_bizerte_2024_25** : statut=juste,
+  complete=**true**. Correspond exactement à la référence.
+
+### Enseignements
+
+- **La V2 a tenu la promesse du retrieval et nettoyé une
+  abstention sur chaque catégorie d'erreur attendue.** Q06
+  (calcul), Q25 (texte_annexes), Q30 (extraction) passent
+  toutes en juste. +2 justes nettes, +3 bons résultats bruts.
+- **Q13 est la régression prévue et assumée** par le critère
+  §4 (meilleur Recall@5 global accepte des pertes locales).
+  Elle sort juste → fausse, ce qui pousse les « justes parmi
+  réponses données » de 100 % à 95,7 %. Trade-off documenté
+  ex ante.
+- **Q12 est l'illustration parfaite du verrou prompt.** Toutes
+  les conditions retrieval sont réunies (page attendue au
+  rang 1, texte complet dans le contexte) et le modèle refuse
+  quand même. C'est le prompt V1.2 qui bloque, pas le pipeline
+  V2. Un plan V3 devrait inclure un prompt revu pour ce pattern.
+- **Aucune invention sur les 4 sans_reponse.** Le filtre
+  entreprise + hybride_filtre + V2.1 n'a fait qu'améliorer le
+  retrieval ; la sortie du modèle reste protégée par la
+  consigne V1.2 (« réponds "donnée non disponible" seulement
+  s'il manque une valeur nécessaire »). Garde-fou validé.
+- **Décision V2 close.** Le pipeline retenu (`v2.1 /
+  hybride_filtre`) améliore effectivement V1.2 au prix d'une
+  régression unique et traçable. Pas d'autre run V2.
+
+### Fichiers créés / modifiés
+
+- `results/v2.jsonl` — 31 lignes, run_id
+  `v2_gemini35flashlite_k5_634426d2b6bfde4e_v2_1_hybride_filtre`.
+- `results/scores_v2.jsonl` — 31 lignes.
+- `data/benchmark/annotations_texte.jsonl` — 3 annotations
+  ajoutées pour le run V2 (Q04, Q08, Q25).
+- `docs/journal.md` — cette entrée.
+
+Pas de code modifié ; suite totale toujours à **363 passed, 3
+deselected**.
+
+### Ce qui reste
+
+- Validation externe sur un nouveau benchmark (plan V2 §8).
+- Éventuel V1.3 pour cibler Q12 (prompt revu sur « quelles X
+  et pour quelle raison ? ») — PAS avant feu vert explicite.
+
+
