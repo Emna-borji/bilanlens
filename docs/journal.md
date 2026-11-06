@@ -1721,8 +1721,13 @@ False=1 (Q30), N/A=9 (5 texte_annexes + 4 sans_reponse).
 - **4 `abstention_a_tort_recall_ok`** : calculs où la page
   principale était récupérée et le modèle refuse quand même
   (Q02, Q06, Q14, Q19). C'est le signal le plus clair pour la
-  V2 : revoir la consigne stricte ou enrichir le prompt avec la
-  définition des formules du cours.
+  **V1.1** (variante : mêmes chunks V1, consigne modifiée dans
+  `TEMPLATE_V1_USER`) : revoir la consigne stricte ou enrichir
+  le prompt avec la définition des formules du cours. **Ne pas
+  confondre avec V2** (planning §V2), qui est une refonte du
+  retrieval en recherche hybride BM25 + vecteurs + filtrage
+  par entreprise/année — V2 et V1.1 testent des leviers
+  différents.
 - **Q07, Q20, Q23, Q28** : recall@5 KO strict mais `valeurs_dans_
   contexte=True`. À séparer en deux : (a) **Q07, Q20 répondent
   juste** (classe `juste`) parce que les 2 valeurs de la
@@ -1896,11 +1901,11 @@ des calculs** (Q02, Q06, Q14, Q19, Q23, Q28). Détail recall :
   en p. 10 au rang 3). **La cause de l'abstention reste
   inconnue** : le modèle a plusieurs instances de la valeur
   dans son contexte, sous des libellés variés. **Piste
-  principale à tester en V2** : la consigne stricte
-  (« donnée non disponible » au moindre doute) ou le
-  passage au calcul numérique bloquent plus que la
-  reconnaissance de libellé — les 6 cas sont tous des
-  calculs, aucun simple extraction.
+  principale à tester en V1.1** (variante prompt, même
+  retrieval) : la consigne stricte (« donnée non disponible »
+  au moindre doute) ou le passage au calcul numérique bloquent
+  plus que la reconnaissance de libellé — les 6 cas sont tous
+  des calculs, aucun simple extraction.
 
 **(c) Réponse fausse (1)** — `monoprix_consolide_2024_10` :
 recall OK, valeurs dans contexte, mais calcul sémantique
@@ -1940,8 +1945,13 @@ sur plusieurs pages.
 - **Séparer recall et exactitude a de la valeur.** V1 a 11
   échecs : 4 problèmes de recherche + 6 abstentions avec
   valeurs présentes + 1 réponse fausse (Q10). Chaque groupe
-  demande une V2 différente ; Q07 et Q20 sont justes malgré
-  recall@5 KO strict et ne comptent pas dans les échecs.
+  pointe vers une variante différente : les problèmes de
+  recherche motivent **V2** du planning (BM25 + vecteurs +
+  filtrage entreprise/année), les abstentions avec valeurs
+  motivent **V1.1** (prompt revisité à chunks identiques),
+  Q10 motive une revue indépendante (lecture de « Total
+  passif »). Q07 et Q20 sont justes malgré recall@5 KO strict
+  et ne comptent pas dans les échecs.
 - **Les pseudo-abstentions sont un piège méthodologique.** Sans
   le filtre « pas de chiffre significatif », une réponse
   chiffrée qui contient aussi un pattern d'abstention en
@@ -1950,7 +1960,15 @@ sur plusieurs pages.
   concernée ici — c'est l'exemple générique qui motive le
   filtre.)
 
-### Expérience proposée pour la V2 (pas lancée ici)
+### Expérience proposée pour la V1.1 (pas lancée ici)
+
+**Clarification de nommage.** Ce que je décris ci-dessous
+s'appelle **V1.1**, pas V2. La V2 du planning (cf.
+`docs/planning.md` §V2) est une refonte du retrieval en
+**recherche hybride BM25 + vecteurs, avec filtrage par
+entreprise et année** — autre levier, autre expérience.
+V1.1 ne touche pas au retrieval : mêmes chunks V1 réutilisés
+tels quels.
 
 Les 6 Q `abstention_a_tort` avec valeurs présentes sont **toutes
 des calculs**. Une seule variable à manipuler, tout le reste
@@ -1958,18 +1976,32 @@ constant, pour tester la piste « consigne prudente bloque les
 calculs » :
 
 - **Relancer les 31 questions** avec exactement les mêmes
-  chunks V1 (top-5 déjà enregistrés dans `results/v1.jsonl`,
-  pas de nouvelle requête Chroma).
-- **Modifier UNE SEULE consigne** du `SYSTEM_INSTRUCTION` :
-  assouplir « abstention au moindre doute » en « quand les
-  valeurs nécessaires sont visibles dans le contexte, faire
-  le calcul explicitement avant de conclure ». Tout le reste
-  du prompt reste identique, pour isoler l'effet consigne.
+  chunks V1 (top-5 déjà enregistrés dans `results/v1.jsonl`).
+  Reconstruction locale du contexte via `score.py --mode
+  rebuild-context` : lit les textes depuis `data/chunks/*.jsonl`
+  et les ordonne selon le `retrieved` V1. **Zéro appel Chroma,
+  zéro appel API embeddings** (vérifié par test de
+  non-régression `test_reconstruire_contexte_v1_toutes_les_
+  31_q` : les 31 Q se reconstruisent à la lettre près,
+  `len(ctx) == context_rendered_chars`).
+- **Modifier UNE SEULE consigne**, et **dans `TEMPLATE_V1_
+  USER` uniquement**, pas dans `SYSTEM_INSTRUCTION`. Raison :
+  `SYSTEM_INSTRUCTION` reste byte-à-byte identique entre
+  B0-strict et V1 pour que l'écart B0-strict vs V1 mesure
+  rigoureusement l'effet du RAG. Toucher à `SYSTEM_
+  INSTRUCTION` casserait cette propriété de comparaison.
+  La consigne ajoutée s'insère dans le template utilisateur
+  (déjà porteur de la consigne `cited_extraits`), de sorte
+  que le bascule « prudent → calcul explicite » soit scopée
+  à V1 et le nouveau run.
 - **Critère principal** : évolution du score sur les **7
   calculs** (Q02, Q06, Q10, Q14, Q19, Q23, Q28). L'hypothèse
   prédit une baisse des `abstention_a_tort` et une hausse des
-  `juste` ; si la hausse va plutôt dans `fausse`, c'est que
-  la capacité calcul elle-même limite, pas la consigne.
+  `juste`. **Si la hausse va plutôt dans `fausse`**, ne pas
+  conclure directement à une limite du modèle : analyser
+  d'abord ces réponses fausses (quelle erreur ? quels chunks
+  cités ? valeurs du contexte bien lues ? erreur d'arithmétique
+  ou de lecture ?) avant de trancher.
 - **Contrôle anti-invention** : les **4 sans_reponse** (Q05,
   Q16, Q26, Q31) doivent rester en `abstention_correcte`, et
   aucune autre Q ne doit basculer vers `fausse` ou
@@ -1987,8 +2019,16 @@ de l'hypothèse « capacité limite du modèle sur les calculs ».
 Évaluation terminée. Les étapes 1 à 8 du planning sont livrées :
 B0 (strict + libre), V1 (RAG k=5), métriques (recall, exactitude,
 valeurs_dans_contexte, 7 classes), comparaison à prompt système
-identique sur 31 Q. Décision V2 ouverte, expérience ci-dessus
-prête à lancer.
+identique sur 31 Q.
+
+Deux variantes identifiées pour la suite (aucune lancée ici) :
+- **V1.1** (expérience ci-dessus) : mêmes chunks V1, UNE consigne
+  modifiée dans `TEMPLATE_V1_USER`. Teste la piste « consigne
+  prudente bloque les calculs ».
+- **V2** du planning : recherche hybride BM25 + vecteurs + filtrage
+  par entreprise/année. Teste la piste « retrieval dense seul
+  rate les lignes de note » (4 Q `problemes_recherche` : Q12, Q21,
+  Q25, Q30).
 
 ### Fichiers modifiés dans la session
 

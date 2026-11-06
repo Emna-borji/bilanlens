@@ -57,6 +57,7 @@ SCORES_COMPARE_PATH = RACINE / "results" / "scores_compare.jsonl"
 TOP20_PATH = RACINE / "results" / "retrieval_top20.jsonl"
 COMPARISON_SVG = RACINE / "results" / "comparison_B0_V1.svg"
 CHROMA_PATH = RACINE / "data" / "chroma"
+CHUNKS_DIR = RACINE / "data" / "chunks"
 
 # Run_ids cibles de la comparaison etape 8. Fixes et cohes : meme
 # modele Flash-Lite pour les 3. Pour B0, il n'y a PAS de top_k dans
@@ -916,6 +917,70 @@ def _ecrire_svg_comparaison(
     path.write_text("\n".join(svg), encoding="utf-8")
 
 
+def charger_chunks_locaux(
+    chunks_dir: Path = CHUNKS_DIR,
+) -> dict[str, str]:
+    """Retourne `{chunk_id: texte}` lu depuis `data/chunks/<doc>.jsonl`.
+
+    Format source : lignes JSON {doc, page_physique, sous_numero,
+    texte}. Le `chunk_id` suit la convention Chroma :
+    `<doc>_p<page_physique>_s<sous_numero>`. Zero appel reseau,
+    zero appel Chroma, zero API embeddings : les textes vivent
+    deja sur disque en resultat de l'etape 3 (chunking).
+
+    Permet de reconstruire le contexte V1 d'une experience V2
+    avec une consigne modifiee, sans relancer de requete vecteur.
+    """
+    out: dict[str, str] = {}
+    for f in sorted(chunks_dir.glob("*.jsonl")):
+        with f.open(encoding="utf-8") as src:
+            for ligne in src:
+                ligne = ligne.strip()
+                if not ligne:
+                    continue
+                try:
+                    r = json.loads(ligne)
+                except json.JSONDecodeError:
+                    continue
+                cid = (f"{r['doc']}_p{r['page_physique']}"
+                        f"_s{r.get('sous_numero', 0)}")
+                out[cid] = r.get("texte", "")
+    return out
+
+
+def reconstruire_contexte_v1(
+    record_v1: dict, chunks_locaux: dict[str, str],
+) -> str:
+    """Reconstruit la chaine de contexte V1 depuis le `retrieved`
+    enregistre + les textes locaux, dans l'ordre du rang.
+
+    Garanties :
+    - Format identique a `evaluate_v1.formater_contexte` : meme
+      separateur "=== Extrait N : <doc>, page <X> ===" et meme
+      concatenation "\\n\\n" entre extraits.
+    - Ordre identique au rang du run V1 : le top-5 garde son
+      classement, le top-1 vient en premier.
+    - Zero Chroma, zero API : la fonction n'ouvre aucune
+      connexion ni requete.
+
+    Si un `chunk_id` du `retrieved` n'est pas dans
+    `chunks_locaux`, son texte est remplace par chaine vide (le
+    test de non-regression doit alors echouer sur la longueur :
+    signal fort d'un chunk manquant dans data/chunks).
+    """
+    from scripts.evaluate_v1 import formater_contexte
+
+    retrieved = sorted(
+        (record_v1.get("retrieved") or []),
+        key=lambda r: int(r.get("rank", 0)),
+    )
+    enriched = []
+    for r in retrieved:
+        cid = r["chunk_id"]
+        enriched.append({**r, "texte": chunks_locaux.get(cid, "")})
+    return formater_contexte(enriched)
+
+
 def diagnostiquer_v1(scores_v1: list[dict]) -> dict:
     """Separe les echecs V1 en 3 groupes DISJOINTS + 1 observation
     distincte.
@@ -971,6 +1036,44 @@ def diagnostiquer_v1(scores_v1: list[dict]) -> dict:
         "juste_malgre_recall_ko": juste_malgre_recall_ko,
         "nb_echecs": nb_echecs,
     }
+
+
+def mode_rebuild_context(questions: list[dict], question_id: str | None = None) -> int:
+    """Reconstruit le contexte V1 depuis `results/v1.jsonl` +
+    `data/chunks/*.jsonl` sans appeler Chroma ni l'API
+    embeddings. Verifie l'invariant
+    `len(contexte_reconstruit) == record["context_rendered_chars"]`
+    pour chaque Q, et affiche un diff en cas d'ecart.
+    """
+    lignes_v1 = charger_jsonl(V1_PATH)
+    v1 = [l for l in lignes_v1 if l.get("run_id") == RUN_ID_V1]
+    if question_id is not None:
+        v1 = [l for l in v1 if l.get("question_id") == question_id]
+    if not v1:
+        print(f"Aucune ligne V1 pour run_id={RUN_ID_V1}"
+               + (f" question_id={question_id}" if question_id else ""))
+        return 1
+
+    chunks_locaux = charger_chunks_locaux()
+    print(f"Chunks locaux charges : {len(chunks_locaux)}")
+
+    ok = 0
+    ecarts: list[tuple[str, int, int]] = []
+    for rec in v1:
+        ctx = reconstruire_contexte_v1(rec, chunks_locaux)
+        attendu = int(rec.get("context_rendered_chars") or 0)
+        if len(ctx) == attendu:
+            ok += 1
+        else:
+            ecarts.append((rec["question_id"], attendu, len(ctx)))
+
+    print(f"Reconstruits identiques a V1 (len) : {ok}/{len(v1)}")
+    if ecarts:
+        print("Ecarts :")
+        for qid, exp, got in ecarts:
+            print(f"  {qid}  attendu={exp}  reconstruit={got}")
+        return 1
+    return 0
 
 
 def mode_compare(questions: list[dict]) -> int:
@@ -1130,15 +1233,24 @@ def mode_compare(questions: list[dict]) -> int:
 def main() -> int:
     parseur = argparse.ArgumentParser(description="Score du run V1.")
     parseur.add_argument(
-        "--mode", choices=["v1", "compare"], default="v1",
+        "--mode", choices=["v1", "compare", "rebuild-context"],
+        default="v1",
         help="'v1' : score le dernier run V1 (default). 'compare' : "
-             "compare B0-strict / B0-libre / V1 (etape 8)."
+             "compare B0-strict / B0-libre / V1 (etape 8). "
+             "'rebuild-context' : reconstruit le contexte V1 depuis "
+             "results/v1.jsonl + data/chunks/, sans Chroma ni API "
+             "embeddings (preparation V2 avec consigne modifiee)."
     )
     parseur.add_argument(
         "--run-id", default=None,
         help="run_id a scorer dans results/v1.jsonl. Default : le "
              "dernier run_id trouve dans v1.jsonl. Ignore en mode "
              "compare (run_ids pin par le code)."
+    )
+    parseur.add_argument(
+        "--question-id", default=None,
+        help="En mode rebuild-context, limite la reconstruction a "
+             "cette seule question (default : toutes les 31)."
     )
     args = parseur.parse_args()
 
@@ -1147,6 +1259,8 @@ def main() -> int:
 
     if args.mode == "compare":
         return mode_compare(questions)
+    if args.mode == "rebuild-context":
+        return mode_rebuild_context(questions, question_id=args.question_id)
 
     lignes_v1 = charger_jsonl(V1_PATH)
     if not lignes_v1:

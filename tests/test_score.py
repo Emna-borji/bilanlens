@@ -496,6 +496,117 @@ def test_diagnostiquer_v1_juste_malgre_recall_ko_hors_echecs():
     assert diag["nb_echecs"] == 0
 
 
+# ---------------------------------------------------------------------------
+# 7.ter. Reconstruction du contexte V1 depuis les chunk_ids
+# ---------------------------------------------------------------------------
+def test_charger_chunks_locaux_retourne_tous_les_chunks_connus():
+    """`charger_chunks_locaux` lit tous les .jsonl de data/chunks/
+    et renvoie {chunk_id: texte} avec la convention
+    `<doc>_p<page>_s<sous>`."""
+    from scripts.score import charger_chunks_locaux
+
+    chunks = charger_chunks_locaux()
+    # Au moins 6 corpus x ~30 pages = plusieurs centaines de chunks.
+    assert len(chunks) > 100
+    # Un chunk connu (la page 1 de sotuver_2024).
+    assert "sotuver_2024_p1_s0" in chunks
+    assert chunks["sotuver_2024_p1_s0"]  # non vide
+
+
+def test_reconstruire_contexte_v1_identique_a_v1_sur_question_connue():
+    """Pour une Q du run V1 enregistre, le contexte reconstruit a
+    EXACTEMENT la meme longueur en caracteres que
+    `context_rendered_chars` V1. Verifie aussi l'ordre des entetes."""
+    import json
+    from pathlib import Path
+
+    from scripts.score import (RUN_ID_V1, charger_chunks_locaux,
+                                  reconstruire_contexte_v1)
+
+    racine = Path(__file__).resolve().parent.parent
+    rec = None
+    for ligne in open(racine / "results" / "v1.jsonl", encoding="utf-8"):
+        r = json.loads(ligne)
+        if (r.get("run_id") == RUN_ID_V1
+                and r["question_id"] == "sotuver_2024_01"):
+            rec = r
+            break
+    assert rec is not None
+
+    chunks = charger_chunks_locaux()
+    ctx = reconstruire_contexte_v1(rec, chunks)
+    assert len(ctx) == rec["context_rendered_chars"]
+    # Ordre des 5 extraits respecte le rang V1.
+    positions = [
+        ctx.index(f"=== Extrait {k} :") for k in range(1, 6)
+    ]
+    assert positions == sorted(positions)
+    # Le header du top-1 porte doc + page du retrieved[0].
+    first = rec["retrieved"][0]
+    assert (f"=== Extrait 1 : {first['doc']}, "
+             f"page {first['page_physique']} ===") in ctx
+
+
+def test_reconstruire_contexte_v1_toutes_les_31_q():
+    """Invariant global : pour les 31 Q du run V1, le contexte
+    reconstruit a la meme longueur que `context_rendered_chars`
+    V1. Un seul ecart = chunk manquant ou convention cassee."""
+    import json
+    from pathlib import Path
+
+    from scripts.score import (RUN_ID_V1, charger_chunks_locaux,
+                                  reconstruire_contexte_v1)
+
+    racine = Path(__file__).resolve().parent.parent
+    chunks = charger_chunks_locaux()
+    ecarts = []
+    total = 0
+    for ligne in open(racine / "results" / "v1.jsonl", encoding="utf-8"):
+        r = json.loads(ligne)
+        if r.get("run_id") != RUN_ID_V1:
+            continue
+        total += 1
+        ctx = reconstruire_contexte_v1(r, chunks)
+        if len(ctx) != r["context_rendered_chars"]:
+            ecarts.append((r["question_id"], r["context_rendered_chars"],
+                            len(ctx)))
+    assert total == 31
+    assert ecarts == [], f"Ecarts de reconstruction : {ecarts}"
+
+
+def test_reconstruire_contexte_v1_sans_chroma_ni_api(monkeypatch):
+    """Garde-fou : la reconstruction ne doit PAS importer chromadb
+    ni appeler charger_encodeur / produire_top20. On patche ces
+    symboles pour exploser si quelqu'un les appelle."""
+    import json
+    from pathlib import Path
+
+    from scripts import score as score_module
+
+    def _boom(*a, **k):
+        raise AssertionError("Chroma / API embeddings appele pendant "
+                               "la reconstruction : interdit")
+
+    monkeypatch.setattr(score_module, "ouvrir_collection", _boom,
+                          raising=False)
+    monkeypatch.setattr(score_module, "charger_encodeur", _boom,
+                          raising=False)
+    monkeypatch.setattr(score_module, "produire_top20", _boom,
+                          raising=False)
+
+    racine = Path(__file__).resolve().parent.parent
+    rec = None
+    for ligne in open(racine / "results" / "v1.jsonl", encoding="utf-8"):
+        r = json.loads(ligne)
+        if (r.get("run_id") == score_module.RUN_ID_V1
+                and r["question_id"] == "sotuver_2024_01"):
+            rec = r
+            break
+    chunks = score_module.charger_chunks_locaux()
+    ctx = score_module.reconstruire_contexte_v1(rec, chunks)
+    assert len(ctx) == rec["context_rendered_chars"]
+
+
 def test_diagnostiquer_v1_fichier_reel():
     """Verifie que sur le run V1 enregistre, le diagnostic donne
     exactement 4+6+1 = 11 echecs + 2 juste_malgre_recall_ko."""
