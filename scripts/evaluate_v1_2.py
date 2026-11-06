@@ -118,7 +118,19 @@ def main() -> int:
     parseur.add_argument("--run-id", default=None)
     parseur.add_argument("--only", default=None)
     parseur.add_argument("--interval-s", type=float, default=7.0)
+    parseur.add_argument(
+        "--output", default=None,
+        help="Chemin alternatif pour results/v1_2.jsonl. Utile pour un "
+             "test de repetabilite : --output results/v1_2_repeat.jsonl "
+             "n'affecte pas le fichier principal.",
+    )
     args = parseur.parse_args()
+
+    global RESULTS_PATH
+    if args.output:
+        RESULTS_PATH = Path(args.output)
+        if not RESULTS_PATH.is_absolute():
+            RESULTS_PATH = RACINE / RESULTS_PATH
 
     lignes_v1 = [
         json.loads(l) for l in open(V1_PATH, encoding="utf-8") if l.strip()

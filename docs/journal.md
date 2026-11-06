@@ -2383,11 +2383,12 @@ d'autres entreprises est nécessaire pour trancher.
   Elles n'étaient ni autonomie financière, ni comparaison. La
   piste « prompt trop dense » est plausible mais non vérifiée.
   Un test V1.3 avec règles séparées éclaircirait.
-- **Score des réponses données : 100 % en V1.2.** Le modèle ne
-  propose plus de mauvaise valeur : soit il répond juste, soit
-  il s'abstient. Dans un cadre de production où une mauvaise
-  réponse coûte plus cher qu'une abstention, c'est une propriété
-  recherchée.
+- **Score des réponses données : 100 % en V1.2.** Aucune réponse
+  fausse sur ces 31 questions, avec un prompt réglé sur ce
+  benchmark. Dans un cadre de production où une mauvaise réponse
+  coûte plus cher qu'une abstention, c'est une propriété
+  recherchée, à confirmer sur un benchmark neuf avant toute
+  généralisation.
 
 ### Fichiers de cette session
 
@@ -2400,4 +2401,154 @@ d'autres entreprises est nécessaire pour trancher.
 - `data/benchmark/annotations_texte.jsonl` : +2 entrées V1.2.
 - `results/v1_2.jsonl` (31 lignes) + `results/scores_v1_2.jsonl`
   (31 lignes).
+
+
+---
+
+## 2026-11-06 (nuit) — Test de répétabilité V1.2 + plan V2
+
+### Test de répétabilité V1.2
+
+Relancé V1.2 une seconde fois sur les 31 questions, mêmes
+chunks reconstruits depuis V1, même `TEMPLATE_V1_2_USER`, même
+`SYSTEM_INSTRUCTION`, même `temperature=0.0`, même modèle
+Flash-Lite. Écrit dans `results/v1_2_repeat.jsonl` sous run_id
+suffixé `_repeat`. `results/v1_2.jsonl` n'est pas modifié.
+
+**Résultats :**
+
+- **27 / 31 Q** : réponse strictement identique (byte-à-byte).
+- **4 / 31 Q** : variations de surface sans changement de classe
+  (toutes restent `juste`).
+
+Détail des 4 divergences :
+
+| qid | V1.2 initial | V1.2 repeat | Classe |
+|---|---|---|---|
+| `delice_holding_2024_27` | « 58 382 497 TND » | « 58 382 497 **dinars** » | juste (synonymes) |
+| `sfbt_2024_20` | « ... entre le **31 décembre 2023 et le 31 décembre 2024** » | « ... entre **2023 et 2024** » | juste (formulation plus courte) |
+| `sotuver_2024_04` | « ... sont **évalués** à ... » | « ... sont **évalues** à ... » | juste (accent perdu) |
+| `sotuver_2024_08` | « La société a reclassé les moules **pour refléter plus fidèlement la nature durable des moules** et aligner... » | « La société a reclassé les moules **pour une meilleure présentation** en **reflets plus fidèlement** la nature durable... » | juste (ordre et phrasé changés) |
+
+### Enseignements
+
+- **La classe V1.2 est stable sur ce run répété.** Aucune
+  bascule entre classes malgré 4 divergences textuelles. Le
+  scoring basé sur `parser_premier_nombre` + `parser_direction`
+  absorbe les variations d'unité (TND / dinars) et de
+  formulation (« entre 2023 et 2024 » vs plus long).
+- **Flash-Lite à `temperature=0.0` n'est PAS déterministe
+  bit-à-bit.** 4 divergences sur 31 appels au même prompt avec
+  les mêmes extraits. Suffixes qui bougent, perte d'accent
+  (Q04 : « évalués » → « evalues »), reformulation du même
+  motif (Q08). C'est un rappel que **« temperature=0 »
+  n'implique pas « sortie déterministe »** : sampling top-k au
+  tie-breaker, ordres de tokens quasi-équivalents, etc.
+- **Les 4 extractions chiffrées cibles (Q01, Q09, Q13, Q17,
+  Q18, Q22, Q27, Q29, Q30) ont toutes la même valeur et la
+  même classe.** Un seul changement de surface (Q27 TND →
+  dinars), zero différence numérique. Les valeurs sont
+  robustes.
+- **Les 2 réponses texte_annexes annotées (Q04, Q08) varient
+  en formulation mais pas en fond.** Les annotations manuelles
+  utilisées sont celles de V1.2 initial (`juste`,
+  `complete` identique), et le scoring les applique au repeat
+  par absence d'annotation spécifique au `v1_2_repeat_...` run_id.
+  Dans un reporting académique, on devrait soit (a) annoter
+  aussi le repeat pour vérifier que le même verdict tient,
+  soit (b) se limiter au score chiffré.
+
+### Avertissement
+
+Ce test de répétabilité est **une seule relance**, pas une
+statistique sur N relances. Pour une vraie mesure de
+reproducibilité on ferait 5-10 relances et on rapporterait
+`std` sur la fréquence de changement de classe.
+
+### Fichiers de cette session
+
+- `scripts/evaluate_v1_2.py` : argument `--output` pour écrire
+  dans un chemin alternatif sans toucher à `results/v1_2.jsonl`.
+- `results/v1_2_repeat.jsonl` : 31 lignes, run_id
+  `v1_2_repeat_gemini35flashlite_k5_634426d2b6bfde4e`.
+
+---
+
+## Plan V2 (à valider — pas de code écrit ici)
+
+**Objectif V2** (cf. `docs/planning.md` §V2) : recherche hybride
+BM25 + vecteurs, avec filtrage par entreprise et année. **Prompt
+V1.2 gardé tel quel** (SYSTEM_INSTRUCTION + TEMPLATE_V1_2_USER
+inchangés). Seul le pipeline retrieval change.
+
+### Motivation (déjà établie)
+
+Les 4 Q `problemes_recherche` V1 (Q12, Q21, Q25, Q30) ont
+`recall@5=KO` et `valeurs_dans_contexte=False`. Elles
+cherchent du texte annexe (méthodes comptables, informations
+rares) sur lesquelles l'embedding dense peine : les requêtes
+ne « matchent » pas sémantiquement les pages d'annexes diluées
+dans du texte long. BM25 attrape les mots-clés exacts comme
+« coût moyen pondéré », « 900 000 tonnes » que l'embedding
+lisse.
+
+Le filtrage par (entreprise, année) évite aussi un bruit déjà
+observé : à k=20 sur Q23, les rangs 10 et 11 sont des pages
+sfbt_2024 au lieu de ciments_bizerte_2024 — pages
+sémantiquement proches, documentairement hors-sujet.
+
+### Étapes
+
+| # | Étape | Fichiers principaux | Tests |
+|---|---|---|---|
+| 1 | **Index BM25 local** sur les chunks existants. Pas de nouveau chunking ; on indexe `data/chunks/*.jsonl` avec `rank_bm25` (lib Python standard, sans serveur). | `bilanlens/bm25.py` (nouveau), `scripts/build_bm25.py` (nouveau) | test construction + recherche top-k sur corpus connu |
+| 2 | **Fusion scores dense + BM25** : Reciprocal Rank Fusion (RRF) à poids égal pour commencer, config ajustable. | `bilanlens/retrieval_hybride.py` (nouveau) | test fusion : 2 rangs → 1 rang final attendu |
+| 3 | **Extraction entreprise + année depuis la question** (ex. « SOTUVER » → `sotuver_2024`, « SFBT 2024 » → `sfbt_2024`). Table de synonymes versionnée. | `bilanlens/filtre_question.py` (nouveau) | test sur les 31 Q du benchmark + Q ambiguës |
+| 4 | **Script `evaluate_v2.py`** qui : extrait filtre doc depuis la Q → requête hybride top-k filtré → reconstruit contexte → même prompt V1.2. Écrit `results/v2.jsonl`. | `scripts/evaluate_v2.py` (nouveau) | tests avec faux BM25, faux dense, faux LLM |
+| 5 | **Mode `score.py --mode v2`** : score V2 avec les mêmes règles que V1.2, compare V1.2 vs V2 Q par Q. | `scripts/score.py` (ajout) | test diag V2 similaire V1.1/V1.2 |
+
+### Fichiers créés / modifiés
+
+- `bilanlens/bm25.py`, `bilanlens/retrieval_hybride.py`, `bilanlens/filtre_question.py` : nouveaux modules isolés, chacun testable sans réseau.
+- `scripts/build_bm25.py` : indexe les chunks locaux une fois, sauvegarde l'index sur disque.
+- `scripts/evaluate_v2.py` : pipeline V2 (filtre → hybride → LLM V1.2).
+- `scripts/score.py` : `RUN_ID_V2`, `mode_v2`.
+- `tests/test_bm25.py`, `tests/test_retrieval_hybride.py`, `tests/test_filtre_question.py`, `tests/test_evaluate_v2.py`.
+- `results/v2.jsonl`, `results/scores_v2.jsonl`.
+
+### Métriques V2 à produire
+
+1. **Recall@k V2 par catégorie**, à k ∈ {1, 3, 5, 10, 20}, comparé à V1 (dense seul).
+2. **MRR V2** vs V1.
+3. **Nombre de Q dont la page attendue monte dans le top-5** après hybride vs dense.
+4. **Score V2** (CLASSES 7), comparé à V1.2 :
+   - Évolution des 4 Q `problemes_recherche` : passent-elles à `juste` ou restent-elles abstention/fausse ?
+   - Contrôle anti-invention : les 4 sans_reponse restent-elles `abstention_correcte` ?
+   - Les 2 régressions V1.2 (Q14, Q23) : impactées ou non ?
+5. **Taux de filtre réussi** : combien de Q ont un filtre doc correctement extrait de la question ? Les Q ambiguës (ex. « Monoprix » qui matche individuel ET consolidé) à examiner.
+6. **Coût V2 vs V1.2** : nombre d'appels LLM (identique), latence totale, taille du contexte envoyé.
+
+### Risques à anticiper
+
+- **Table de synonymes entreprise.** « Monoprix » peut désigner
+  SNMVT-Monoprix individuel ou Monoprix consolidé ; le benchmark
+  distingue les deux (Q09 vs Q13). Le filtre doit lire la
+  question en entier pour choisir.
+- **Les Q sans_reponse ne nomment pas toujours une entreprise
+  explicitement.** Q05 : « SOTUVER » → facile. Q16 : « SNMVT-
+  Monoprix » → facile. À vérifier Q26 et Q31.
+- **Fuite d'information par filtre.** Si le filtre devine
+  l'entreprise et élimine tout le reste, il peut masquer un
+  vrai cas où l'info est dans un autre document. Cas non
+  pertinent pour notre benchmark BVMT, mais à documenter.
+- **RRF à poids égal** : baseline raisonnable, mais peut être
+  sous-optimale. On démarre simple, on mesure, on ajuste.
+
+### Ce qui reste décidé
+
+- V1.2 reste le prompt figé pour V2. On ne change pas la
+  consigne calcul.
+- Les 6 corpus (sotuver, monoprix, monoprix_consolide, sfbt,
+  delice_holding, ciments_bizerte) restent le périmètre.
+- Même modèle Flash-Lite, même k=5 pour le contexte final.
 
