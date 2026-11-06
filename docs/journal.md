@@ -3259,7 +3259,7 @@ Recall@k et MRR (retrieval V2.1/hybride_filtre) :
 V2 = 21/1/9. **Les totaux agrégés sont identiques par
 coïncidence**, pas parce que le contenu des top-5 serait
 inchangé : Q13 passe True → False (la page 5 attendue sort du
-top-5) et Q30 passe False → True (la page 32 attendue entre
+top-5) et Q30 passe False → True (la page 4 attendue entre
 dans le top-5). Les deux migrations se compensent exactement.
 Vérifier le vdc Q par Q et non à l'agrégat.
 
@@ -3277,7 +3277,7 @@ Vérifier le vdc Q par Q et non à l'agrégat.
 
 | qid | cat | V1.2 | V2 | Interprétation |
 |---|---|---|---|---|
-| sotuver_2024_06 | calcul | abstention_a_tort_recall_**ok** | **juste** | Prompt V1.2 inchangé, retrieval V2.1 pousse la bonne page → sortie « 1,90 » (ratio = 190 %). |
+| sotuver_2024_06 | calcul | abstention_a_tort_recall_**ok** | **juste** | Prompt V1.2 inchangé, retrieval V2.1 pousse la bonne page → sortie « 1,90 » (endettement global exprimé comme un multiple, pas un pourcentage). |
 | monoprix_consolide_2024_12 | texte_annexes | abstention_a_tort_recall_ko | abstention_a_tort_recall_**ok** | Retrieval amélioré (page 13 passe de rang 6 à rang 1), mais LLM abstient toujours malgré que la réponse soit INTÉGRALEMENT dans le chunk rang 1. **La cause de l'abstention reste inconnue**. *Hypothèse à tester* : le prompt V1.2 est très conservateur sur les questions en « quelles X et pour quelle raison ? » quand le texte source est long et narratif ; il refuse peut-être par prudence quand la réponse n'est pas une valeur isolée. Nécessite une mesure dédiée (variante prompt, même retrieval). |
 | monoprix_2024_13 | extraction | juste | **fausse_recall_ko** | Perte prévue par le benchmark. V2.1 hybride_filtre descend la page 5 hors top-5 ; le LLM lit « Revenus et autres » page 8 (746 256 912 = total produits d'exploitation). Ne pas corriger. |
 | ciments_bizerte_2024_25 | texte_annexes | abstention_a_tort_recall_ko | **juste** | BM25 filtré V2.1 remonte la page 14 au rang 1 → V2 sort « 900 000 tonnes par an ». Validé juste/complete=true. |
@@ -3434,8 +3434,9 @@ Lectures clés :
 - **V1.2 → V2** : effet du retrieval (prompt V1.2 inchangé
   byte-à-byte). +2 bons résultats, Recall@5 + 3 Q (19 → 22),
   MRR +0,17. Payé par 1 régression Q13 (juste → fausse) ; la
-  précision retombe à 95,7 % mais reste bien au-dessus de V1
-  (94,1 %) et V1.1 (81,8 %).
+  précision retombe à 95,7 % mais reste légèrement au-dessus de
+  V1 (94,1 %), soit une question d'écart, et nettement au-dessus
+  de V1.1 (81,8 %).
 - **Les colonnes Recall@5 / MRR sont identiques V1, V1.1, V1.2**
   parce que ces 3 runs partagent exactement le retrieval dense
   V1. Seule la consigne du prompt change. V2 est la première
