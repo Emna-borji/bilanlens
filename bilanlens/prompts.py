@@ -167,3 +167,33 @@ def prompt_version_v1() -> str:
     avec contexte). V1 n'herite PAS de B0-libre : la variante libre
     reste cantonnee a la mesure d'hallucination."""
     return hash_prompt(SYSTEM_INSTRUCTION, TEMPLATE_V1_USER)
+
+
+# V1.1 : variante de V1 qui ajoute UNE consigne au TEMPLATE USER,
+# sans toucher a SYSTEM_INSTRUCTION. Cible les abstentions a tort
+# sur les calculs (6 Q en V1 : Q02, Q06, Q14, Q19, Q23, Q28, toutes
+# calculs). Le prompt systeme reste byte-a-byte identique a
+# B0-strict pour preserver la paire de comparaison.
+#
+# Pas de nouveau champ dans le schema JSON (le answer contient
+# juste la valeur finale + unite).
+TEMPLATE_V1_1_USER = (
+    "Contexte (extraits du rapport annuel) :\n{context}"
+    "\n\nQuestion :\n{question}"
+    "\n\nSi la question demande un calcul et que toutes les valeurs "
+    "necessaires figurent dans les extraits, fais le calcul exact. "
+    "Dans le champ answer, donne uniquement le resultat final avec "
+    "son unite. Reponds \"donnee non disponible\" seulement s'il "
+    "manque une valeur necessaire."
+    "\n\nDans le champ cited_extraits du JSON, liste les numeros "
+    "d'extraits (1, 2, 3, ...) que tu as reellement utilises pour "
+    "construire ta reponse. Liste vide [] si aucun extrait n'a servi."
+)
+
+
+def prompt_version_v1_1() -> str:
+    """Hash du prompt V1.1 (SYSTEM_INSTRUCTION identique a V1 +
+    TEMPLATE_V1_1_USER). DIFFERENT de prompt_version_v1() : garantit
+    que V1 et V1.1 vivent sous des run_id distincts et ne se
+    melangent pas dans results/."""
+    return hash_prompt(SYSTEM_INSTRUCTION, TEMPLATE_V1_1_USER)

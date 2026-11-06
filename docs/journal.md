@@ -1982,7 +1982,8 @@ calculs » :
   et les ordonne selon le `retrieved` V1. **Zéro appel Chroma,
   zéro appel API embeddings** (vérifié par test de
   non-régression `test_reconstruire_contexte_v1_toutes_les_
-  31_q` : les 31 Q se reconstruisent à la lettre près,
+  31_q` : les 31 Q se reconstruisent avec **longueur, chunk_id
+  et ordre identiques** au top-5 V1 d'origine,
   `len(ctx) == context_rendered_chars`).
 - **Modifier UNE SEULE consigne**, et **dans `TEMPLATE_V1_
   USER` uniquement**, pas dans `SYSTEM_INSTRUCTION`. Raison :
