@@ -2474,81 +2474,229 @@ reproducibilité on ferait 5-10 relances et on rapporterait
 
 ---
 
-## Plan V2 (à valider — pas de code écrit ici)
+## Plan V2 (corrigé 2026-11-06 — pas de code écrit, pas de run)
 
-**Objectif V2** (cf. `docs/planning.md` §V2) : recherche hybride
-BM25 + vecteurs, avec filtrage par entreprise et année. **Prompt
-V1.2 gardé tel quel** (SYSTEM_INSTRUCTION + TEMPLATE_V1_2_USER
-inchangés). Seul le pipeline retrieval change.
+**Objectif V2** (`docs/planning.md` §V2) : recherche hybride
+BM25 + vecteurs, avec **filtrage par entreprise seulement**
+(le filtre année est désactivé sur ce corpus, cf. §Filtres).
+**Prompt V1.2 gardé tel quel** (`SYSTEM_INSTRUCTION` +
+`TEMPLATE_V1_2_USER` inchangés). Seul le pipeline retrieval
+change.
 
-### Motivation (déjà établie)
+### Motivation
 
 Les 4 Q `problemes_recherche` V1 (Q12, Q21, Q25, Q30) ont
-`recall@5=KO` et `valeurs_dans_contexte=False`. Elles
-cherchent du texte annexe (méthodes comptables, informations
-rares) sur lesquelles l'embedding dense peine : les requêtes
-ne « matchent » pas sémantiquement les pages d'annexes diluées
-dans du texte long. BM25 attrape les mots-clés exacts comme
-« coût moyen pondéré », « 900 000 tonnes » que l'embedding
-lisse.
+`recall@5=KO` et `valeurs_dans_contexte=False`. Elles cherchent
+du texte annexe (méthodes comptables, informations rares) sur
+lesquelles l'embedding dense peine : les requêtes ne matchent
+pas sémantiquement les pages d'annexes diluées dans du texte
+long. BM25 attrape les mots-clés exacts comme « coût moyen
+pondéré » ou « 900 000 tonnes » que l'embedding lisse.
 
-Le filtrage par (entreprise, année) évite aussi un bruit déjà
-observé : à k=20 sur Q23, les rangs 10 et 11 sont des pages
-sfbt_2024 au lieu de ciments_bizerte_2024 — pages
-sémantiquement proches, documentairement hors-sujet.
+Filtrage par entreprise observé utile : à k=20 sur Q23, les
+rangs 10 et 11 sont des pages `sfbt_2024` au lieu de
+`ciments_bizerte_2024` — pages sémantiquement proches,
+documentairement hors sujet.
 
-### Étapes
+### §1. Filtres (règles définies ex ante)
 
-| # | Étape | Fichiers principaux | Tests |
+- **Filtre année — DÉSACTIVÉ sur ce corpus.** Les 6 rapports
+  sont tous de l'exercice 2024. Une question qui cite 2023
+  (ex. Q07 « stocks bruts au 31 décembre 2023 par le
+  retraitement NCT 11 ») fait toujours référence à une colonne
+  interne au rapport 2024, pas à un rapport 2023 séparé. **Ne
+  pas filtrer sur l'année citée dans la question.**
+  Si un futur benchmark introduit des exercices différents
+  (2023 ou 2025), rouvrir ce filtre.
+- **Filtre entreprise — avec garde-fous :**
+  - Si la question mentionne sans ambigüité une seule
+    entreprise (ex. « SOTUVER », « Ciments de Bizerte »,
+    « Délice Holding », « SFBT ») → filtre à cette entreprise.
+  - Si la question ne tranche pas entre `monoprix_2024`
+    (individuel) et `monoprix_consolide_2024` → **garder les
+    deux** dans le périmètre de recherche.
+  - Si l'entreprise n'est pas reconnue → **pas de filtre**,
+    retour à la recherche globale.
+- **Note sur le benchmark actuel :** les 31 questions nomment
+  toutes leur société. Le benchmark ne testera donc pas le cas
+  « entreprise non reconnue ». C'est un angle mort à mesurer sur
+  de nouvelles questions.
+
+### §2. Comparaison retrieval SANS LLM (5 configurations)
+
+Avant de lancer le moindre run LLM, mesurer sur les 31 Q la
+qualité de retrieval des configurations suivantes :
+
+| Config | Description |
+|---|---|
+| **dense** | Baseline V1 déjà enregistrée dans `results/retrieval_top20.jsonl`. |
+| **BM25** | BM25 seul sur les chunks locaux. |
+| **hybride RRF** | Fusion rangs dense + BM25 via Reciprocal Rank Fusion. |
+| **dense + filtre entreprise** | Dense restreint au périmètre de l'entreprise de la Q. |
+| **hybride + filtre entreprise** | Fusion RRF restreinte au périmètre. |
+
+**Métriques pour chaque configuration :**
+
+- Recall@1, Recall@3, Recall@5, Recall@10, Recall@20 (sur 27 Q
+  avec page attendue).
+- MRR (sur les mêmes 27 Q).
+- **Rangs des pages attendues** par Q, pour inspecter les
+  migrations (ex. page 4 ciments_bizerte passe-t-elle de rang 6
+  à rang 3 avec BM25 ?).
+
+Zéro appel LLM à ce stade. Seulement BM25 local + vecteurs
+cached + fusion.
+
+### §3. Hyperparamètres définis AVANT de coder
+
+Tous les paramètres ci-dessous sont **figés avant toute mesure**
+et versionnés dans `bilanlens/bm25.py` / `retrieval_hybride.py` :
+
+- **Tokenisation française.**
+  - Minuscules.
+  - Accents retirés (NFKD + suppression des marks).
+  - Nombres gardés **tels quels** (pas de normalisation
+    `100 836 224` → `100836224`), parce que BM25 doit matcher
+    les montants écrits à l'identique dans le PDF.
+  - Stop words **désactivés**. Le corpus est financier et
+    court ; retirer « de », « et », « à » risque de casser des
+    expressions comme « Résultat net de l'exercice ». Plutôt
+    laisser BM25 pondérer via IDF.
+- **BM25 — paramètres.**
+  - `k1 = 1.5` (valeur standard rank_bm25).
+  - `b = 0.75` (valeur standard rank_bm25).
+  - Rationale : **pas d'ajustement sans donnée**. Les deux
+    valeurs sont les défauts documentés de la littérature et de
+    `rank_bm25`. Un seul changement = un seul axe de variance
+    à discuter ; on commence par le standard.
+- **RRF — paramètres.**
+  - Taille des listes avant fusion : **top-50** dense ET top-50
+    BM25 (donne de la marge pour que la fusion remonte des
+    chunks lointains).
+  - Constante k RRF : **k = 60** (valeur canonique de la
+    littérature TREC).
+  - Score d'un chunk : `Σ_i 1 / (k + rang_i)` sur les listes
+    où il apparaît.
+- **Version épinglée :** `rank_bm25 == 0.2.2` (dernière stable
+  au 2026-11-06 ; à ajouter dans `requirements.txt`).
+
+### §4. Critère de choix de configuration (écrit AVANT de voir les résultats)
+
+**La configuration retenue pour la V2 sera celle qui maximise
+`Recall@5` sur les 27 Q avec page attendue, à égalité départagée
+par `MRR` plus élevé.** Un seuil minimum est imposé :
+`Recall@5 ≥ Recall@5 V1 = 19/27 (70 %)`. Si aucune configuration
+n'atteint ce seuil, la V2 n'est pas lancée (le dense V1 reste
+meilleur et V2 serait une régression).
+
+**Sous-contraintes de garde-fou :**
+
+- Le filtrage entreprise doit garder une **couverture 100 % des
+  31 Q** (pas de question qui se retrouve avec un périmètre
+  vide à cause d'un filtre trop strict).
+- Si deux configurations sont à égalité stricte sur Recall@5
+  *et* MRR, préférer la plus simple (BM25 seul > hybride, pas
+  de filtre > filtre).
+
+Ce critère est écrit **ici, dans le journal, avant d'exécuter
+les mesures**. Toute dérogation devra être justifiée dans le
+commit qui lance la V2.
+
+### §5. UN SEUL run LLM après choix
+
+Une fois la configuration élue selon §4, **un seul run LLM**
+avec :
+
+- Prompt V1.2 (SYSTEM_INSTRUCTION + TEMPLATE_V1_2_USER).
+- `k = 5` pour le contexte envoyé (identique V1/V1.2).
+- Même modèle `gemini-3.5-flash-lite`.
+- Même `temperature = 0.0`.
+- Même format de ligne jsonl que `evaluate_v1_2.py`.
+
+Écrit dans `results/v2.jsonl` sous run_id dédié `v2_
+<slug>_k5_<prompt_version_v1_2>_<config_retrieval>`.
+
+**Comparaison V2 vs V1.2** sur les mêmes règles que V1.2
+(`score.py --mode v2`) :
+
+1. Classes par catégorie (CLASSES 7).
+2. `valeurs_dans_contexte` par Q.
+3. Détail des 6 Q d'intérêt : **Q12, Q14, Q21, Q23, Q25, Q30**
+   (les 4 problemes_recherche + les 2 régressions V1.2).
+4. Les **4 sans_reponse** (Q05, Q16, Q26, Q31) : contrôle
+   anti-invention.
+5. **Montrer toute nouvelle réponse `texte_annexes`** avant de
+   l'annoter (comme pour V1.1 et V1.2).
+
+### §6. Structure code (à écrire)
+
+| # | Fichier | Rôle | Tests |
 |---|---|---|---|
-| 1 | **Index BM25 local** sur les chunks existants. Pas de nouveau chunking ; on indexe `data/chunks/*.jsonl` avec `rank_bm25` (lib Python standard, sans serveur). | `bilanlens/bm25.py` (nouveau), `scripts/build_bm25.py` (nouveau) | test construction + recherche top-k sur corpus connu |
-| 2 | **Fusion scores dense + BM25** : Reciprocal Rank Fusion (RRF) à poids égal pour commencer, config ajustable. | `bilanlens/retrieval_hybride.py` (nouveau) | test fusion : 2 rangs → 1 rang final attendu |
-| 3 | **Extraction entreprise + année depuis la question** (ex. « SOTUVER » → `sotuver_2024`, « SFBT 2024 » → `sfbt_2024`). Table de synonymes versionnée. | `bilanlens/filtre_question.py` (nouveau) | test sur les 31 Q du benchmark + Q ambiguës |
-| 4 | **Script `evaluate_v2.py`** qui : extrait filtre doc depuis la Q → requête hybride top-k filtré → reconstruit contexte → même prompt V1.2. Écrit `results/v2.jsonl`. | `scripts/evaluate_v2.py` (nouveau) | tests avec faux BM25, faux dense, faux LLM |
-| 5 | **Mode `score.py --mode v2`** : score V2 avec les mêmes règles que V1.2, compare V1.2 vs V2 Q par Q. | `scripts/score.py` (ajout) | test diag V2 similaire V1.1/V1.2 |
+| 1 | `bilanlens/bm25.py` | Indexation + recherche BM25 sur chunks locaux. Tokenisation définie §3. | construction + top-k sur corpus toy ; absence de normalisation chiffres |
+| 2 | `scripts/build_bm25.py` | Indexe `data/chunks/*.jsonl` une fois, sauvegarde sur disque. | test idempotence |
+| 3 | `bilanlens/retrieval_hybride.py` | RRF sur 2 listes top-50 → fusion. Paramètres §3. | fusion 2 rangs → score attendu ; cas liste vide |
+| 4 | `bilanlens/filtre_question.py` | Détection entreprise selon §1. Table de synonymes versionnée. | 31 Q du benchmark ; cas Monoprix ambigu → périmètre à 2 |
+| 5 | `scripts/benchmark_retrieval.py` | Lance les 5 configs sans LLM, écrit `results/retrieval_compare.jsonl` + stats. | test agrégation sur fake data |
+| 6 | `scripts/evaluate_v2.py` | Pipeline V2 avec la config retenue. | faux BM25 + faux dense + faux LLM |
+| 7 | `scripts/score.py --mode v2` | Scoring V2 selon règles V1.2. | diag V2 similaire V1.1/V1.2 |
 
-### Fichiers créés / modifiés
+### §7. Métriques V2 à produire au total
 
-- `bilanlens/bm25.py`, `bilanlens/retrieval_hybride.py`, `bilanlens/filtre_question.py` : nouveaux modules isolés, chacun testable sans réseau.
-- `scripts/build_bm25.py` : indexe les chunks locaux une fois, sauvegarde l'index sur disque.
-- `scripts/evaluate_v2.py` : pipeline V2 (filtre → hybride → LLM V1.2).
-- `scripts/score.py` : `RUN_ID_V2`, `mode_v2`.
-- `tests/test_bm25.py`, `tests/test_retrieval_hybride.py`, `tests/test_filtre_question.py`, `tests/test_evaluate_v2.py`.
-- `results/v2.jsonl`, `results/scores_v2.jsonl`.
+1. **Recall@k et MRR** des 5 configurations retrieval (§2).
+2. **Taux de filtre réussi** par entreprise :
+   - Nb de Q correctement filtrées à la bonne entreprise.
+   - Nb de Q où le périmètre est « Monoprix individuel +
+     consolidé » (ambigüité gardée).
+   - Nb de Q sans filtre (entreprise non reconnue).
+3. **Classes V2** (7), par catégorie, comparé à V1.2.
+4. **valeurs_dans_contexte V2** vs V1.2.
+5. **Évolution des 6 Q cibles** (Q12, Q14, Q21, Q23, Q25, Q30)
+   et des 4 sans_reponse.
+6. **Nouvelles réponses fausses** (contrôle, cf. règle V1.1/V1.2).
+7. **Coût V2 vs V1.2** : LLM identique, latence totale, taille
+   contexte envoyé.
 
-### Métriques V2 à produire
+### §8. Validation externe nécessaire
 
-1. **Recall@k V2 par catégorie**, à k ∈ {1, 3, 5, 10, 20}, comparé à V1 (dense seul).
-2. **MRR V2** vs V1.
-3. **Nombre de Q dont la page attendue monte dans le top-5** après hybride vs dense.
-4. **Score V2** (CLASSES 7), comparé à V1.2 :
-   - Évolution des 4 Q `problemes_recherche` : passent-elles à `juste` ou restent-elles abstention/fausse ?
-   - Contrôle anti-invention : les 4 sans_reponse restent-elles `abstention_correcte` ?
-   - Les 2 régressions V1.2 (Q14, Q23) : impactées ou non ?
-5. **Taux de filtre réussi** : combien de Q ont un filtre doc correctement extrait de la question ? Les Q ambiguës (ex. « Monoprix » qui matche individuel ET consolidé) à examiner.
-6. **Coût V2 vs V1.2** : nombre d'appels LLM (identique), latence totale, taille du contexte envoyé.
+**Le réglage final de V2 (hyperparamètres BM25/RRF, table de
+synonymes entreprise, critère §4) sera lui-même un fit sur les
+31 Q.** Ce réglage devra être validé sur un benchmark neuf :
 
-### Risques à anticiper
+- Nouvelles autonomies financières (≥ 5 Q, autres entreprises /
+  exercices).
+- Nouvelles questions `texte_annexes` sur méthodes comptables
+  rares.
+- Nouvelles Q `sans_reponse` dont l'entreprise n'est pas nommée
+  pour tester le cas « pas de filtre ».
 
-- **Table de synonymes entreprise.** « Monoprix » peut désigner
-  SNMVT-Monoprix individuel ou Monoprix consolidé ; le benchmark
-  distingue les deux (Q09 vs Q13). Le filtre doit lire la
-  question en entier pour choisir.
-- **Les Q sans_reponse ne nomment pas toujours une entreprise
-  explicitement.** Q05 : « SOTUVER » → facile. Q16 : « SNMVT-
-  Monoprix » → facile. À vérifier Q26 et Q31.
-- **Fuite d'information par filtre.** Si le filtre devine
-  l'entreprise et élimine tout le reste, il peut masquer un
-  vrai cas où l'info est dans un autre document. Cas non
-  pertinent pour notre benchmark BVMT, mais à documenter.
-- **RRF à poids égal** : baseline raisonnable, mais peut être
-  sous-optimale. On démarre simple, on mesure, on ajuste.
+Sans cette validation, les chiffres V2 racontent uniquement ce
+qui marche sur ce benchmark particulier, pas une amélioration
+généralisable.
 
-### Ce qui reste décidé
+### §9. Risques listés (inchangé mais complété)
 
-- V1.2 reste le prompt figé pour V2. On ne change pas la
-  consigne calcul.
-- Les 6 corpus (sotuver, monoprix, monoprix_consolide, sfbt,
-  delice_holding, ciments_bizerte) restent le périmètre.
-- Même modèle Flash-Lite, même k=5 pour le contexte final.
+- **Ambigüité Monoprix** : le filtre garde les deux docs quand
+  la question dit « Monoprix » sans qualifier. Peut diluer la
+  sélection pour Q13 (« SNMVT-Monoprix » individuel) si le
+  filtre n'extrait pas « SNMVT ». À tester explicitement.
+- **Q sans_reponse Q26, Q31** : à vérifier qu'elles nomment bien
+  leur entreprise. Si non, « pas de filtre » s'applique → V2
+  cherche dans tout le corpus pour ces Q.
+- **BM25 et chiffres** : un montant comme « 100 836 224 » est
+  tokenisé en 3 tokens (« 100 », « 836 », « 224 »). BM25 va
+  trouver les pages qui contiennent ces 3 nombres, mais aussi
+  d'autres pages qui partagent « 100 » ou « 224 » isolément.
+  À surveiller dans les rangs des Q extraction.
+- **RRF k = 60** : canonique, mais peu interprétable sur des
+  listes de 50. Vérifier que les scores ne s'écrasent pas.
+
+### §10. Décisions figées pour V2
+
+- Prompt V1.2 inchangé.
+- 6 corpus BVMT 2024, modèle Flash-Lite, k=5 pour contexte final.
+- `rank_bm25 == 0.2.2`, `k1=1.5`, `b=0.75`, `k_RRF=60`,
+  listes top-50 avant fusion.
+- Critère §4 (Recall@5 max, MRR en départage) **écrit avant les
+  mesures**.
+- Aucun code V2 écrit, aucun run V2 lancé dans ce journal.
 
