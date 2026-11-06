@@ -65,6 +65,9 @@ CHUNKS_DIR = RACINE / "data" / "chunks"
 RUN_ID_B0_STRICT = "b0_gemini35flashlite_90b019c736aa621c"
 RUN_ID_B0_LIBRE = "b0libre_gemini35flashlite_21c68d1cba543eeb"
 RUN_ID_V1 = "v1_gemini35flashlite_k5_a3c4180afaeb900e"
+RUN_ID_V1_1 = "v1_1_gemini35flashlite_k5_d2bbaa1f9adda0ab"
+V1_1_PATH = RACINE / "results" / "v1_1.jsonl"
+SCORES_V1_1_PATH = RACINE / "results" / "scores_v1_1.jsonl"
 
 K_LIST = (1, 3, 5, 10, 20)
 
@@ -220,23 +223,25 @@ def exact_numerique(
         direction_obtenue = parser_direction(answer_parsed_text)
         valeur_obtenue = parser_premier_nombre(answer_parsed_text)
         tol = ans_bench.get("tolerance_absolute", _tolerance_par_defaut(None))
+        diff = (
+            abs((valeur_obtenue or 0) - (valeur_attendue or 0))
+            if valeur_obtenue is not None else None
+        )
+        direction_ok = (direction_obtenue == direction_attendue)
+        valeur_ok = (valeur_obtenue is not None and diff is not None
+                       and diff <= tol)
         detail = {
             "format": "variation",
             "direction_attendue": direction_attendue,
             "direction_obtenue": direction_obtenue,
+            "direction_ok": direction_ok,
             "valeur_attendue": valeur_attendue,
             "valeur_obtenue": valeur_obtenue,
+            "valeur_ok": valeur_ok,
             "tolerance_absolue": tol,
-            "diff_absolue": (
-                abs((valeur_obtenue or 0) - (valeur_attendue or 0))
-                if valeur_obtenue is not None else None
-            ),
+            "diff_absolue": diff,
         }
-        if direction_obtenue != direction_attendue:
-            return False, detail
-        if valeur_obtenue is None:
-            return False, detail
-        return abs(valeur_obtenue - valeur_attendue) <= tol, detail
+        return (direction_ok and valeur_ok), detail
 
     # Pourcentage : tolerance_absolute_pp.
     if fmt == "pourcentage":
@@ -566,6 +571,17 @@ def scorer_question(
     if annotation is not None and cat == "texte_annexes":
         complete = annotation.get("complete")
 
+    # Score secondaire pour les comparaisons : valeur exacte mais
+    # direction manquante (critere post-hoc, introduit apres avoir
+    # vu V1.1 produire "18 577 651 TND" sans "diminution de").
+    comp_valeur_seule_ok = None
+    if (isinstance(detail_exact, dict)
+            and detail_exact.get("format") == "variation"):
+        comp_valeur_seule_ok = bool(
+            detail_exact.get("valeur_ok")
+            and not detail_exact.get("direction_ok")
+        )
+
     return {
         "run_id": run_id or record_v1.get("run_id"),
         "provenance": "v1",
@@ -578,6 +594,7 @@ def scorer_question(
         "rangs_pages_attendues": rangs,
         "valeurs_dans_contexte": vdc,
         "exact_ok": exact_ok,
+        "comparaison_valeur_seule_ok": comp_valeur_seule_ok,
         "detail_exact": detail_exact,
         "complete": complete,
         "mode_annotation": mode_annotation,
@@ -1038,6 +1055,154 @@ def diagnostiquer_v1(scores_v1: list[dict]) -> dict:
     }
 
 
+def _charger_retrieval_top20() -> tuple[dict[str, list[dict]], dict[str, list[str]]]:
+    """Lit results/retrieval_top20.jsonl (produit par mode compare)
+    + les textes depuis data/chunks/, et retourne (top20_par_qid,
+    textes_par_qid). Zero appel Chroma. Permet de scorer V1.1 avec
+    les memes metriques recall@k que V1 sans refaire la requete."""
+    top20_par_qid: dict[str, list[dict]] = {}
+    with TOP20_PATH.open(encoding="utf-8") as f:
+        for ligne in f:
+            r = json.loads(ligne)
+            top20_par_qid[r["question_id"]] = r["top20"]
+    chunks_locaux = charger_chunks_locaux()
+    textes_par_qid: dict[str, list[str]] = {}
+    for qid, top20 in top20_par_qid.items():
+        textes = []
+        for item in sorted(top20, key=lambda r: int(r.get("rank", 0))):
+            cid = item["chunk_id"]
+            textes.append(chunks_locaux.get(cid, ""))
+        textes_par_qid[qid] = textes
+    return top20_par_qid, textes_par_qid
+
+
+def mode_v1_1(questions: list[dict]) -> int:
+    """Score V1.1 avec les memes regles que V1 (recall, exactitude,
+    7 classes, valeurs_dans_contexte). Reutilise retrieval_top20
+    (meme retrieval que V1) + chunks locaux. Zero appel Chroma.
+
+    Ecrit results/scores_v1_1.jsonl et affiche :
+    - stats par classe (CLASSES V1)
+    - synthese par categorie
+    - compare chaque Q V1 vs V1.1 : changement de classe
+    - score secondaire : nb Q "juste strict + comparaison_valeur_
+      seule_ok" (critere post-hoc)
+    """
+    lignes_v1 = charger_jsonl(V1_PATH)
+    v1 = {l["question_id"]: l for l in lignes_v1 if l.get("run_id") == RUN_ID_V1}
+    lignes_v1_1 = charger_jsonl(V1_1_PATH)
+    v1_1 = {l["question_id"]: l for l in lignes_v1_1
+            if l.get("run_id") == RUN_ID_V1_1}
+    if not v1 or not v1_1:
+        print(f"ERREUR : V1 ({len(v1)}) ou V1.1 ({len(v1_1)}) vide.")
+        return 1
+
+    print(f"V1   : {len(v1)}/31 reponses")
+    print(f"V1.1 : {len(v1_1)}/31 reponses")
+
+    top20_par_qid, textes_par_qid = _charger_retrieval_top20()
+    print(f"Top-20 charge (sans Chroma) : {len(top20_par_qid)} questions")
+
+    # Annotations V1.1 : filtrage par run_id.
+    ann_v1 = charger_annotations(run_id=RUN_ID_V1)
+    ann_v1_1 = charger_annotations(run_id=RUN_ID_V1_1)
+    print(f"Annotations V1   : {len(ann_v1)}")
+    print(f"Annotations V1.1 : {len(ann_v1_1)}")
+
+    scores_v1_1 = []
+    scores_v1 = []
+    for q in questions:
+        qid = q["id"]
+        if qid not in v1_1 or qid not in v1:
+            continue
+        top20 = top20_par_qid.get(qid, [])
+        textes_top20 = textes_par_qid.get(qid, [])
+        # Les 5 textes du top-5 V1 = les 5 premiers du top-20 (meme
+        # retrieval).
+        rec_v1 = v1[qid]
+        textes_v1 = [
+            textes_top20[int(r.get("rank", 1)) - 1]
+            for r in rec_v1.get("retrieved", [])
+            if 1 <= int(r.get("rank", 1)) <= len(textes_top20)
+        ]
+        scores_v1.append(
+            scorer_question(q, rec_v1, top20, textes_v1, ann_v1,
+                             run_id=RUN_ID_V1)
+        )
+        rec_v1_1 = v1_1[qid]
+        scores_v1_1.append(
+            scorer_question(q, rec_v1_1, top20, textes_v1, ann_v1_1,
+                             run_id=RUN_ID_V1_1)
+        )
+
+    with SCORES_V1_1_PATH.open("w", encoding="utf-8") as f:
+        for s in scores_v1_1:
+            f.write(json.dumps(s, ensure_ascii=False) + "\n")
+    print(f"Ecrit : {SCORES_V1_1_PATH.relative_to(RACINE)}")
+
+    print()
+    print("=== Stats V1 (etape 7, rejoue ici pour reference) ===")
+    afficher_stats(scores_v1)
+    print()
+    print("=== Stats V1.1 ===")
+    afficher_stats(scores_v1_1)
+
+    # Comparaison Q par Q.
+    print()
+    print("=== Comparaison V1 vs V1.1 par Q (changement de classe) ===")
+    ch_v1 = {s["question_id"]: s for s in scores_v1}
+    ch_v1_1 = {s["question_id"]: s for s in scores_v1_1}
+    changements = []
+    for qid in sorted(ch_v1.keys()):
+        cl1 = ch_v1[qid]["classe"]
+        cl11 = ch_v1_1[qid]["classe"]
+        if cl1 != cl11:
+            changements.append((qid, ch_v1[qid]["category"], cl1, cl11))
+    if changements:
+        print(f"  {'qid':<32}  {'cat':<16}  {'V1':<32}  V1.1")
+        for qid, cat, cl1, cl11 in changements:
+            print(f"  {qid:<32}  {cat:<16}  {cl1:<32}  {cl11}")
+    else:
+        print("  (aucun changement)")
+
+    # Detail des 7 calculs.
+    print()
+    print("=== Detail des 7 calculs V1 -> V1.1 ===")
+    print(f"  {'qid':<32}  {'V1':<30}  V1.1")
+    for qid in sorted(ch_v1.keys()):
+        if ch_v1[qid]["category"] != "calcul":
+            continue
+        a1 = ch_v1[qid]["reponse_modele"][:30]
+        a11 = ch_v1_1[qid]["reponse_modele"][:60]
+        print(f"  {qid:<32}  {a1:<30}  {a11}")
+
+    # 4 sans_reponse.
+    print()
+    print("=== 4 sans_reponse : V1 vs V1.1 ===")
+    for qid in sorted(ch_v1.keys()):
+        if ch_v1[qid]["category"] != "sans_reponse":
+            continue
+        print(f"  {qid:<32}  V1={ch_v1[qid]['classe']:<24}  "
+              f"V1.1={ch_v1_1[qid]['classe']}")
+
+    # Score secondaire : valeur exacte sans direction, V1.1.
+    valeur_seule_v1 = [s for s in scores_v1
+                        if s.get("comparaison_valeur_seule_ok")]
+    valeur_seule_v1_1 = [s for s in scores_v1_1
+                          if s.get("comparaison_valeur_seule_ok")]
+    print()
+    print("=== Score secondaire : comparaison avec valeur exacte "
+           "mais direction manquante ===")
+    print(f"  (Critere post-hoc, defini APRES avoir vu le resultat V1.1.")
+    print(f"   Classe stricte reste `fausse_recall_*`.)")
+    print(f"  V1   : {len(valeur_seule_v1)} Q concernees : "
+          f"{[s['question_id'] for s in valeur_seule_v1]}")
+    print(f"  V1.1 : {len(valeur_seule_v1_1)} Q concernees : "
+          f"{[s['question_id'] for s in valeur_seule_v1_1]}")
+
+    return 0
+
+
 def mode_rebuild_context(questions: list[dict], question_id: str | None = None) -> int:
     """Reconstruit le contexte V1 depuis `results/v1.jsonl` +
     `data/chunks/*.jsonl` sans appeler Chroma ni l'API
@@ -1233,7 +1398,7 @@ def mode_compare(questions: list[dict]) -> int:
 def main() -> int:
     parseur = argparse.ArgumentParser(description="Score du run V1.")
     parseur.add_argument(
-        "--mode", choices=["v1", "compare", "rebuild-context"],
+        "--mode", choices=["v1", "compare", "rebuild-context", "v1-1"],
         default="v1",
         help="'v1' : score le dernier run V1 (default). 'compare' : "
              "compare B0-strict / B0-libre / V1 (etape 8). "
@@ -1261,6 +1426,8 @@ def main() -> int:
         return mode_compare(questions)
     if args.mode == "rebuild-context":
         return mode_rebuild_context(questions, question_id=args.question_id)
+    if args.mode == "v1-1":
+        return mode_v1_1(questions)
 
     lignes_v1 = charger_jsonl(V1_PATH)
     if not lignes_v1:

@@ -2046,3 +2046,200 @@ Deux variantes identifiées pour la suite (aucune lancée ici) :
 - `results/comparison_B0_V1.svg` : nouveau, graphique groupé.
 - `scripts/evaluate_v1.py` : commentaire header élargi (« calcul
   OU comparaison »).
+
+---
+
+## 2026-11-06 — V1.1 : mêmes chunks + consigne calcul
+
+### Ce que j'ai fait
+
+- Nouveau `bilanlens/prompts.py:TEMPLATE_V1_1_USER` = TEMPLATE_V1_USER
+  + une consigne calcul exacte (fournie par l'utilisateur).
+  `SYSTEM_INSTRUCTION` reste byte-à-byte identique à B0-strict et V1
+  pour préserver la paire de comparaison. `JSON_SCHEMA_REPONSE_V1`
+  inchangé : pas de nouveau champ dans la réponse.
+- Nouveau `scripts/evaluate_v1_1.py` qui **relit `results/v1.jsonl`
+  + les chunks depuis `data/chunks/*.jsonl`**, reconstruit le
+  contexte (longueur, chunk_id et ordre identiques au top-5 V1 —
+  vérifié par `test_reconstruire_contexte_v1_toutes_les_31_q`), et
+  n'appelle que le LLM. **Zéro appel Chroma, zéro appel API
+  embeddings.**
+- Run V1.1 sous `v1_1_gemini35flashlite_k5_d2bbaa1f9adda0ab`,
+  écrit dans `results/v1_1.jsonl` (31 lignes) ; `results/v1.jsonl`
+  n'est pas modifié.
+- Nouveau mode `scripts/score.py --mode v1-1` qui score V1.1 avec
+  les mêmes règles que V1, réutilise `results/retrieval_top20.jsonl`
+  + chunks locaux (pas de recall@k recalculé en ligne) et produit
+  la comparaison classe-par-classe.
+- Annotations manuelles Q04 et Q08 dupliquées sous
+  `run_id=v1_1_...` — les réponses texte V1.1 sont **identiques
+  byte-à-byte** à V1 pour les 5 Q `texte_annexes`, donc même
+  verdict applicable.
+
+### Résultats
+
+**Par classe V1 → V1.1 :**
+
+| Classe | V1 | V1.1 | Δ |
+|---|---|---|---|
+| `juste` | 16 | **18** | **+2** |
+| `fausse_recall_ok` | 1 | 3 | +2 |
+| `fausse_recall_ko` | 0 | 1 | +1 |
+| `abstention_a_tort_recall_ok` | 4 | 1 | −3 |
+| `abstention_a_tort_recall_ko` | 6 | 4 | −2 |
+| `abstention_correcte` | 4 | 4 | 0 |
+| `reponse_a_tort` | 0 | 0 | 0 |
+
+**Par catégorie (juste + abstention_correcte) :**
+
+| Catégorie | V1 | V1.1 |
+|---|---|---|
+| extraction | 8/9 | 8/9 |
+| **calcul** | **0/7** | **3/7** |
+| comparaison | 6/6 | 5/6 |
+| texte_annexes | 2/5 | 2/5 |
+| sans_reponse | 4/4 | 4/4 |
+| **TOTAL** | **20/31** | **22/31** |
+
+**Score secondaire** (juste strict + 1 comparaison « valeur
+exacte, direction manquante » — Q07) = **23/31**. Critère
+**post-hoc**, défini après avoir vu le résultat V1.1 ; à
+mentionner comme tel dans tout reporting.
+
+### Détail des 7 calculs V1 → V1.1
+
+| qid | Benchmark | V1 | V1.1 | Verdict V1.1 |
+|---|---|---|---|---|
+| Q02 sotuver | 34,53 % | abstention | **52,74 %** | `fausse_recall_ok` |
+| Q06 sotuver | 1,9 | abstention | abstention | **abstention inexpliquée** |
+| Q10 monoprix_c | 13,03 % | 16,51 % | 16,51 % | inchangé |
+| Q14 monoprix | 0,93 % | abstention | **0,93 %** | **juste** ✅ |
+| Q19 sfbt | 74,43 % | abstention | **291,07 %** | `fausse_recall_ok` |
+| Q23 ciments | −11,52 % | abstention | **−11,52 %** | **juste** ✅ |
+| Q28 delice | 9,48 % | abstention | **9,48 %** | **juste** ✅ |
+
+**3 nouvelles justes (Q14, Q23, Q28), 2 nouvelles fausses (Q02, Q19).**
+
+### Correction d'analyse — Q02 et Q19 ne sont PAS des hallucinations
+
+Q02 (52,74 %) et Q19 (291,07 %) partagent la **même erreur
+sémantique** que Q10 (16,51 %) : le modèle divise les capitaux
+propres par le **total des passifs (dettes)** au lieu du **total
+du bilan (capitaux propres + passifs)**. Vérification
+arithmétique :
+
+- Q02 : 120 964 179 / 229 345 985 = **52,74 %** (vraie formule :
+  120 964 179 / 350 310 164 = 34,53 %)
+- Q10 : 49 423 396 / 299 295 661 = **16,51 %** (vraie :
+  49 423 396 / 379 260 923 = 13,03 %)
+- Q19 : 954 001 282 / 327 771 572 = **291,07 %** (vraie :
+  954 001 282 / 1 281 772 854 = 74,43 %)
+
+Les valeurs sont toutes lues correctement dans le contexte. Le
+modèle confond **« Total passif »** (= total du bilan, convention
+du cours) et **« Total des passifs »** (= dettes hors capitaux
+propres, libellé du tableau). C'est une **erreur de vocabulaire
+comptable, pas une invention**.
+
+Avec la consigne V1.1 « fais le calcul exact », le modèle ne
+s'abstient plus mais applique une formule sémantiquement fausse.
+V1 abstenait sur ces 3 Q ; V1.1 répond, et fait l'erreur de
+définition 3 fois sur 3 — pattern cohérent, pas aléatoire.
+
+### Nouvelles fausses à analyser avant toute conclusion
+
+**Q02, Q19** (règle « analyser avant de conclure à une limite du
+modèle ») : réponses chiffrées produites par la consigne V1.1. Pas
+un bug du LLM mais une ambiguïté terminologique du benchmark
+lui-même (« Total passif » du cours ≠ « Total des passifs » du
+bilan). Pistes :
+- Préciser dans le prompt la définition de « Total passif » ?
+  (ajouterait du biais spécifique BVMT).
+- Reformuler la question pour lever l'ambigüité ?
+- Accepter 2 formules et scorer les deux comme justes ? (non
+  demandé ici, juste noté.)
+
+### Régression Q07 (seule comparaison impactée)
+
+| | V1 | V1.1 |
+|---|---|---|
+| `sotuver_2024_07` | « diminution de 18 577 651 TND entre 2023 et 2024 » | **« 18 577 651 TND »** |
+| Classe | `juste` | **`fausse_recall_ko`** |
+
+La consigne V1.1 « donne uniquement le résultat final avec son
+unité » supprime le mot `diminution`. **Les 5 autres comparaisons
+(Q03, Q11, Q15, Q20, Q24) conservent toutes la direction en
+V1.1.** Q07 est la seule touchée.
+
+Décision : garder le scoring strict (Q07 = fausse). Score
+secondaire post-hoc (valeur absolue correcte, direction manquante)
+proposé en complément, **explicitement signalé** comme défini
+après avoir vu le résultat.
+
+### Q06 : abstention inexpliquée
+
+Q06 (endettement SOTUVER = Total dettes / Capitaux propres) reste
+`donnee non disponible` en V1.1 alors que :
+- Les 2 valeurs (229 345 985 et 120 964 179) sont dans le
+  contexte, **au même chunk que Q02** (page 3).
+- Q02 répond 52,74 % (chiffré, même paire de valeurs).
+- Le calcul est trivial : 229 345 985 / 120 964 179 = 1,896.
+
+**Mystère non résolu.** Peut-être la formulation de la question
+(« endettement global... exprimé comme un multiple ») ou un
+problème d'interprétation du mot « multiple », mais rien ne
+l'explique proprement sur ce run.
+
+### Contrôle anti-invention ✅
+
+**Q05, Q16, Q26, Q31** (sans_reponse) : **4/4 abstentions
+correctes**. Aucune bascule vers `fausse` ou `reponse_a_tort`.
+Aucune autre Q ne gagne une réponse fausse non prévue (Q02 et Q19
+étaient déjà en abstention en V1 et basculent vers `fausse_recall_ok`,
+pas d'une Q juste V1 vers une Q fausse V1.1, sauf Q07 qui est un
+cas spécifique de perte de direction, pas une hallucination).
+
+### Décisions prises
+
+| Décision | Justification |
+|---|---|
+| Score secondaire post-hoc pour Q07 | Classe stricte garde priorité ; critère de secours documenté comme ayant été défini après observation du résultat |
+| Annotations Q04/Q08 dupliquées V1 → V1.1 | Réponses byte-à-byte identiques : même verdict applicable, pas une nouvelle annotation de jugement |
+| Pas de modification du prompt pour corriger « Total passif » vs « Total des passifs » | Hors scope de V1.1 ; la V2 (retrieval hybride) est peut-être une meilleure réponse à cette ambigüité |
+
+### Ce que j'ai appris
+
+- **La consigne consignes/calcul débloque 3 des 6 calculs
+  abstention-à-tort (Q14, Q23, Q28).** La piste « consigne trop
+  prudente » n'est pas fausse : le modèle *peut* faire le calcul
+  s'il est invité à le poser.
+- **Mais elle convertit 2 abstentions prudentes en erreurs
+  sémantiques (Q02, Q19).** Pas des hallucinations numériques :
+  la même confusion « Total passif » = dettes que Q10 déjà en V1.
+  Le pattern est cohérent (3/3 autonomies financières).
+- **Les sans_reponse tiennent.** Le contrôle anti-invention
+  passe : la consigne révisée ne provoque pas de nouvelles
+  réponses sur les Q sans réponse.
+- **Q07 est un dommage collatéral attendu.** « Donne uniquement
+  le résultat final avec son unité » supprime la direction. Une
+  V1.2 pourrait reformuler : « donne la direction et la valeur ».
+  Mais c'est une 2e variation à tester, pas une correction locale.
+- **Q06 reste inexpliquée.** Mêmes valeurs que Q02, question
+  mécaniquement plus simple, le modèle refuse. Pas un biais de la
+  consigne, pas un problème de recall.
+
+### Fichiers de cette session
+
+- `bilanlens/prompts.py` : `TEMPLATE_V1_1_USER`,
+  `prompt_version_v1_1`.
+- `scripts/evaluate_v1_1.py` : nouveau (reconstruction contexte
+  depuis V1, 0 appel Chroma/embedding).
+- `scripts/score.py` : `RUN_ID_V1_1`, `mode_v1_1`, champ
+  `comparaison_valeur_seule_ok` dans le score, enrichissement de
+  `exact_numerique` (direction_ok / valeur_ok séparés).
+- `tests/test_evaluate_v1_1.py` : 7 tests.
+- `data/benchmark/annotations_texte.jsonl` : +2 entrées V1.1
+  (Q04, Q08).
+- `results/v1_1.jsonl` : 31 lignes, run V1.1.
+- `results/scores_v1_1.jsonl` : 31 lignes, scoring V1.1.
+
