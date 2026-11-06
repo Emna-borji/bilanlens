@@ -69,6 +69,12 @@ RUN_ID_V1_1 = "v1_1_gemini35flashlite_k5_d2bbaa1f9adda0ab"
 V1_1_PATH = RACINE / "results" / "v1_1.jsonl"
 SCORES_V1_1_PATH = RACINE / "results" / "scores_v1_1.jsonl"
 
+# V1.2 : run_id n'est pas connu avant l'execution (depend du
+# prompt_version_v1_2 qui change si le template bouge). Recalcul
+# en runtime dans mode_v1_2.
+V1_2_PATH = RACINE / "results" / "v1_2.jsonl"
+SCORES_V1_2_PATH = RACINE / "results" / "scores_v1_2.jsonl"
+
 K_LIST = (1, 3, 5, 10, 20)
 
 # 7 classes pour un run V1 (avec retrieval : recall_ok/ko distingue).
@@ -1203,6 +1209,142 @@ def mode_v1_1(questions: list[dict]) -> int:
     return 0
 
 
+def mode_v1_2(questions: list[dict]) -> int:
+    """Score V1.2 avec les memes regles que V1 et V1.1. Compare
+    V1.1 vs V1.2 Q par Q. Reutilise retrieval_top20.jsonl +
+    chunks locaux : 0 appel Chroma."""
+    lignes_v1_1 = charger_jsonl(V1_1_PATH)
+    v1_1 = {l["question_id"]: l for l in lignes_v1_1
+            if l.get("run_id") == RUN_ID_V1_1}
+    lignes_v1_2 = charger_jsonl(V1_2_PATH)
+    if not lignes_v1_2:
+        print(f"ERREUR : {V1_2_PATH} vide ou absent.")
+        return 1
+    run_id_v1_2 = lignes_v1_2[-1]["run_id"]
+    v1_2 = {l["question_id"]: l for l in lignes_v1_2
+            if l.get("run_id") == run_id_v1_2}
+
+    print(f"V1.1 : {len(v1_1)}/31 reponses  (run {RUN_ID_V1_1})")
+    print(f"V1.2 : {len(v1_2)}/31 reponses  (run {run_id_v1_2})")
+
+    top20_par_qid, textes_par_qid = _charger_retrieval_top20()
+    print(f"Top-20 charge (sans Chroma) : {len(top20_par_qid)} questions")
+
+    ann_v1_1 = charger_annotations(run_id=RUN_ID_V1_1)
+    ann_v1_2 = charger_annotations(run_id=run_id_v1_2)
+    print(f"Annotations V1.1 : {len(ann_v1_1)}")
+    print(f"Annotations V1.2 : {len(ann_v1_2)}")
+
+    scores_v1_1 = []
+    scores_v1_2 = []
+    for q in questions:
+        qid = q["id"]
+        if qid not in v1_1 or qid not in v1_2:
+            continue
+        top20 = top20_par_qid.get(qid, [])
+        textes_top20 = textes_par_qid.get(qid, [])
+        rec_v1_1 = v1_1[qid]
+        textes_v1 = [
+            textes_top20[int(r.get("rank", 1)) - 1]
+            for r in rec_v1_1.get("retrieved", [])
+            if 1 <= int(r.get("rank", 1)) <= len(textes_top20)
+        ]
+        scores_v1_1.append(
+            scorer_question(q, rec_v1_1, top20, textes_v1, ann_v1_1,
+                             run_id=RUN_ID_V1_1)
+        )
+        rec_v1_2 = v1_2[qid]
+        scores_v1_2.append(
+            scorer_question(q, rec_v1_2, top20, textes_v1, ann_v1_2,
+                             run_id=run_id_v1_2)
+        )
+
+    with SCORES_V1_2_PATH.open("w", encoding="utf-8") as f:
+        for s in scores_v1_2:
+            f.write(json.dumps(s, ensure_ascii=False) + "\n")
+    print(f"Ecrit : {SCORES_V1_2_PATH.relative_to(RACINE)}")
+
+    print()
+    print("=== Stats V1.1 (ref) ===")
+    afficher_stats(scores_v1_1)
+    print()
+    print("=== Stats V1.2 ===")
+    afficher_stats(scores_v1_2)
+
+    # Justes parmi reponses donnees (hors abstentions).
+    print()
+    print("=== Justes parmi les reponses donnees (hors abstention) ===")
+    for lab, scores in [("V1.1", scores_v1_1), ("V1.2", scores_v1_2)]:
+        donnees = [
+            s for s in scores
+            if s["classe"] not in ("abstention_a_tort_recall_ok",
+                                     "abstention_a_tort_recall_ko",
+                                     "abstention_correcte")
+        ]
+        justes = [s for s in donnees if s["classe"] == "juste"]
+        print(f"  {lab} : {len(justes)}/{len(donnees)} reponses donnees "
+              f"sont justes")
+
+    # Comparaison Q par Q.
+    print()
+    print("=== Comparaison V1.1 vs V1.2 par Q (changement de classe) ===")
+    i1 = {s["question_id"]: s for s in scores_v1_1}
+    i2 = {s["question_id"]: s for s in scores_v1_2}
+    changes = []
+    for qid in sorted(i1):
+        if i1[qid]["classe"] != i2[qid]["classe"]:
+            changes.append(
+                (qid, i1[qid]["category"],
+                 i1[qid]["classe"], i2[qid]["classe"])
+            )
+    if changes:
+        print(f"  {'qid':<32}  {'cat':<16}  {'V1.1':<32}  V1.2")
+        for qid, cat, c1, c2 in changes:
+            print(f"  {qid:<32}  {cat:<16}  {c1:<32}  {c2}")
+    else:
+        print("  (aucun changement)")
+
+    # Focus sur les Q cibles par les regles V1.2.
+    print()
+    print("=== Focus : Q02, Q06, Q07, Q10, Q19 ===")
+    cibles = [
+        "sotuver_2024_02", "sotuver_2024_06", "sotuver_2024_07",
+        "monoprix_consolide_2024_10", "sfbt_2024_19",
+    ]
+    for qid in cibles:
+        if qid in i1 and qid in i2:
+            print(f"  {qid:<32}  V1.1={i1[qid]['classe']:<30}  "
+                  f"V1.2={i2[qid]['classe']}")
+            print(f"    V1.1 : {i1[qid]['reponse_modele'][:80]}")
+            print(f"    V1.2 : {i2[qid]['reponse_modele'][:80]}")
+
+    # 4 sans_reponse.
+    print()
+    print("=== 4 sans_reponse : V1.1 vs V1.2 ===")
+    for qid in sorted(i1):
+        if i1[qid]["category"] == "sans_reponse":
+            print(f"  {qid:<32}  V1.1={i1[qid]['classe']:<24}  "
+                  f"V1.2={i2[qid]['classe']}")
+
+    # Nouvelles fausses (V1.2 fausse mais V1.1 juste ou abstention).
+    print()
+    print("=== Nouvelles reponses fausses en V1.2 ===")
+    nouvelles_fausses = [
+        qid for qid in sorted(i1)
+        if i2[qid]["classe"] in ("fausse_recall_ok", "fausse_recall_ko",
+                                   "reponse_a_tort")
+        and i1[qid]["classe"] != i2[qid]["classe"]
+    ]
+    if nouvelles_fausses:
+        for qid in nouvelles_fausses:
+            print(f"  {qid:<32}  V1.1={i1[qid]['classe']}  "
+                  f"-> V1.2={i2[qid]['classe']}")
+    else:
+        print("  (aucune)")
+
+    return 0
+
+
 def mode_rebuild_context(questions: list[dict], question_id: str | None = None) -> int:
     """Reconstruit le contexte V1 depuis `results/v1.jsonl` +
     `data/chunks/*.jsonl` sans appeler Chroma ni l'API
@@ -1398,7 +1540,7 @@ def mode_compare(questions: list[dict]) -> int:
 def main() -> int:
     parseur = argparse.ArgumentParser(description="Score du run V1.")
     parseur.add_argument(
-        "--mode", choices=["v1", "compare", "rebuild-context", "v1-1"],
+        "--mode", choices=["v1", "compare", "rebuild-context", "v1-1", "v1-2"],
         default="v1",
         help="'v1' : score le dernier run V1 (default). 'compare' : "
              "compare B0-strict / B0-libre / V1 (etape 8). "
@@ -1428,6 +1570,8 @@ def main() -> int:
         return mode_rebuild_context(questions, question_id=args.question_id)
     if args.mode == "v1-1":
         return mode_v1_1(questions)
+    if args.mode == "v1-2":
+        return mode_v1_2(questions)
 
     lignes_v1 = charger_jsonl(V1_PATH)
     if not lignes_v1:

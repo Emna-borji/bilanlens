@@ -197,3 +197,38 @@ def prompt_version_v1_1() -> str:
     que V1 et V1.1 vivent sous des run_id distincts et ne se
     melangent pas dans results/."""
     return hash_prompt(SYSTEM_INSTRUCTION, TEMPLATE_V1_1_USER)
+
+
+# V1.2 : variante de V1.1 avec deux regles supplementaires issues de
+# l'analyse post-hoc des erreurs V1.1 (Q02/Q10/Q19 confondant "Total
+# passif" avec "Total des passifs" ; Q07 perdant la direction de la
+# variation). Ces deux regles sont donc **adaptees au benchmark
+# actuel** : leur generalisation doit etre verifiee sur un benchmark
+# neuf avant toute conclusion.
+#
+# SYSTEM_INSTRUCTION reste byte-a-byte identique a V1 et B0-strict.
+# Le schema JSON (JSON_SCHEMA_REPONSE_V1) est inchange : pas de
+# nouveau champ.
+TEMPLATE_V1_2_USER = (
+    "Contexte (extraits du rapport annuel) :\n{context}"
+    "\n\nQuestion :\n{question}"
+    "\n\nSi la question demande un calcul et que toutes les valeurs "
+    "necessaires figurent dans les extraits, fais le calcul exact. "
+    "Dans le champ answer, donne uniquement le resultat final avec "
+    "son unite. Reponds \"donnee non disponible\" seulement s'il "
+    "manque une valeur necessaire."
+    "\n\nDans une formule d'autonomie financiere, le total passif "
+    "designe le total des capitaux propres et des passifs (total "
+    "du bilan)."
+    "\n\nPour une variation ou une comparaison, indique aussi le "
+    "sens (augmentation ou diminution)."
+    "\n\nDans le champ cited_extraits du JSON, liste les numeros "
+    "d'extraits (1, 2, 3, ...) que tu as reellement utilises pour "
+    "construire ta reponse. Liste vide [] si aucun extrait n'a servi."
+)
+
+
+def prompt_version_v1_2() -> str:
+    """Hash du prompt V1.2 (SYSTEM_INSTRUCTION identique a V1 +
+    TEMPLATE_V1_2_USER). Distinct des versions precedentes."""
+    return hash_prompt(SYSTEM_INSTRUCTION, TEMPLATE_V1_2_USER)
