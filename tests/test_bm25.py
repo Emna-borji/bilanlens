@@ -1,7 +1,14 @@
-"""Tests de bilanlens/bm25.py : tokenisation (§3 V2) + index BM25."""
+"""Tests de bilanlens/bm25.py : tokenisation (§3 V2 et V2.1) + index BM25."""
 from __future__ import annotations
 
-from bilanlens.bm25 import B, IndexBM25, K1, tokeniser
+from bilanlens.bm25 import (
+    B,
+    IndexBM25,
+    K1,
+    STOP_WORDS_FR,
+    tokeniser,
+    tokeniser_v2_1,
+)
 
 
 # ------------------------------------------------------------------
@@ -144,6 +151,128 @@ def test_index_bm25_chunk_vide_ne_fait_pas_planter():
     index = IndexBM25(chunks)
     res = index.rechercher("stocks", top_k=2)
     assert res[0]["chunk_id"] == "a_p1_s0"
+
+
+# ------------------------------------------------------------------
+# V2.1 — stop words français (post-hoc)
+# ------------------------------------------------------------------
+
+def test_stop_words_fr_contient_mots_frequents():
+    # Garde-fou : la liste NLTK FR versionnée doit contenir les
+    # mots fréquents attendus (après normalisation accents).
+    attendus = {"de", "et", "la", "le", "les", "du", "des", "a",
+                "au", "aux", "en", "une", "un"}
+    assert attendus.issubset(STOP_WORDS_FR)
+
+
+def test_stop_words_fr_contient_mots_courts_apostrophe():
+    # « l'exercice » → ["l", "exercice"] en V2. En V2.1, « l »
+    # doit disparaître (c'est un stop word NLTK).
+    for lettre in ["l", "d", "j", "c", "n", "s", "t", "y", "m"]:
+        assert lettre in STOP_WORDS_FR, (
+            f"« {lettre} » absente de STOP_WORDS_FR (issue des "
+            f"apostrophes françaises)"
+        )
+
+
+def test_stop_words_fr_accents_retires():
+    # « été » dans NLTK devient « ete » après normalisation locale
+    # (même règle que la tokenisation V2).
+    assert "ete" in STOP_WORDS_FR
+    assert "etait" in STOP_WORDS_FR
+    assert "etaient" in STOP_WORDS_FR
+    assert "meme" in STOP_WORDS_FR
+    assert "a" in STOP_WORDS_FR  # « à » de NLTK
+
+
+def test_tokeniser_v2_1_retire_stop_words_simples():
+    # « de l'exercice 2024 » : V2 → ["de", "l", "exercice", "2024"]
+    # V2.1 → ["exercice", "2024"]
+    tokens = tokeniser_v2_1("de l'exercice 2024")
+    assert tokens == ["exercice", "2024"]
+
+
+def test_tokeniser_v2_1_conserve_nombres_et_termes_domaine():
+    tokens = tokeniser_v2_1(
+        "Revenus de SOTUVER 100 836 224 TND de l'exercice 2024"
+    )
+    assert "revenus" in tokens
+    assert "sotuver" in tokens
+    assert "100836224" in tokens
+    assert "tnd" in tokens
+    assert "exercice" in tokens
+    assert "2024" in tokens
+    # Stop words retirés :
+    for sw in ("de", "l"):
+        assert sw not in tokens
+
+
+def test_tokeniser_v2_1_chaine_vide():
+    assert tokeniser_v2_1("") == []
+
+
+def test_tokeniser_v2_1_tokens_restants_apres_filtre_decroit_ou_egal():
+    # Par construction, V2.1 produit au plus autant de tokens que
+    # V2 sur n'importe quelle chaîne.
+    import random
+    random.seed(0)
+    for _ in range(50):
+        n = random.randint(0, 15)
+        mots = random.choices(
+            ["de", "stocks", "la", "sfbt", "provision", "100",
+             "836", "revenus", "l", "societe"],
+            k=n,
+        )
+        texte = " ".join(mots)
+        assert len(tokeniser_v2_1(texte)) <= len(tokeniser(texte))
+
+
+def test_index_bm25_accepte_tokenizer_v2_1():
+    chunks = [
+        {"chunk_id": "a_p1_s0",
+         "texte": "stocks de la société 100 836 224 TND"},
+        {"chunk_id": "b_p1_s0",
+         "texte": "immobilisations corporelles"},
+    ]
+    # Avec V2.1, « de » et « la » disparaissent du corpus.
+    index_v2_1 = IndexBM25(chunks, tokenizer=tokeniser_v2_1)
+    res = index_v2_1.rechercher("stocks 100 836 224", top_k=2)
+    assert res[0]["chunk_id"] == "a_p1_s0"
+
+
+def test_index_bm25_tokenizer_affecte_score():
+    # Le changement de tokenizer DOIT changer le score BM25 sur un
+    # corpus assez varié pour que l'IDF ne soit pas identiquement
+    # nulle. On construit 6 chunks : 3 contiennent « societe »
+    # avec différents stop words, 3 non. Un chunk cible contient
+    # « stocks » (terme rare) + plein de stop words.
+    chunks = [
+        {"chunk_id": "a_p1_s0",
+         "texte": "stocks de la societe sotuver financiere"},
+        {"chunk_id": "b_p1_s0",
+         "texte": "placements autres actifs sotuver"},
+        {"chunk_id": "c_p1_s0",
+         "texte": "chiffres resultats rapport sotuver exercice"},
+        {"chunk_id": "d_p1_s0",
+         "texte": "notes annexes amortissements immobilisations"},
+        {"chunk_id": "e_p1_s0",
+         "texte": "capitaux propres passif bilan"},
+        {"chunk_id": "f_p1_s0",
+         "texte": "produits charges exploitation activites"},
+    ]
+    idx_v2 = IndexBM25(chunks)
+    idx_v2_1 = IndexBM25(chunks, tokenizer=tokeniser_v2_1)
+    # Question : « stocks de la societe » → V2 compte 4 tokens,
+    # V2.1 n'en compte que 2 (stocks, societe).
+    res_v2 = idx_v2.rechercher("stocks de la societe", top_k=2)
+    res_v2_1 = idx_v2_1.rechercher("stocks de la societe", top_k=2)
+    # Les deux retournent a_p1_s0 en premier (il contient
+    # « stocks » et « societe »).
+    assert res_v2[0]["chunk_id"] == "a_p1_s0"
+    assert res_v2_1[0]["chunk_id"] == "a_p1_s0"
+    # Le score V2.1 doit être différent du V2 (preuve que le
+    # filtre modifie effectivement le calcul BM25).
+    assert res_v2[0]["score"] != res_v2_1[0]["score"]
 
 
 def test_index_bm25_meme_tokenisation_pour_chunk_et_question():

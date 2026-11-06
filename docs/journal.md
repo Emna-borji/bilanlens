@@ -2589,6 +2589,19 @@ et versionnés dans `bilanlens/bm25.py` / `retrieval_hybride.py` :
     veut « préserver des expressions ». Si la mesure montre
     qu'un stop-list classique améliore Recall@5, V2.1 pourra
     la tester explicitement.
+  - **CORRECTIF POST-HOC (ajouté après mesure V2) :**
+    l'argument « l'IDF fait le tri » est FAUX avec
+    `rank_bm25 0.2.2`. `BM25Okapi` remplace tout IDF ≤ 0 par
+    `eps = 0.25 × average_idf`, ce qui donne un **plancher
+    d'environ 1,15** aux mots très fréquents (« de » mesuré à
+    1,148 ; « resultat » à 1,221). Les stop words contribuent
+    donc au score. V2.1 ajoute un filtre d'une liste publique
+    de stop words français (NLTK FR, recopiée dans
+    `bilanlens/bm25.py` avec sa source). Mesure : BM25 seul
+    passe de 13/27 à 18/27 au Recall@5, hybride_filtre passe
+    de 19/27 à 22/27. **Cette décision n'était PAS prise ex
+    ante** — elle est documentée dans l'entrée journal du
+    2026-11-06 (soir, 2).
   - **Ordre stable** (voir aussi plus bas) : la tokenisation
     est déterministe, pas de hash dependent-du-process.
 - **BM25 — paramètres.**
@@ -2962,6 +2975,214 @@ Suite totale : **317 passed, 3 deselected** (zéro régression).
 
 - `scripts/evaluate_v2.py` : pipeline V2 avec `dense_filtre` +
   prompt V1.2 inchangé + k=5 contexte.
+- `scripts/score.py --mode v2` : scoring V2 vs V1.2.
+- UN run LLM V2 (après feu vert).
+
+Ne pas coder tant que le feu vert n'est pas donné.
+
+
+
+---
+
+## 2026-11-06 (soir, 2) — V2.1 : stop words français ajoutés post-hoc
+
+### Ce que j'ai fait
+
+Après mesure V2 (bm25 seul à 13/27 au Recall@5), tracé l'IDF des
+mots fréquents produit par `rank_bm25 0.2.2` sur le corpus BVMT :
+
+- IDF plancher ≈ 1,148 pour « de » (présent dans quasi toutes les
+  pages).
+- IDF ≈ 1,221 pour « resultat » (très fréquent, financier).
+- L'argument V2 « l'IDF fait le tri » est FAUX : `BM25Okapi`
+  remplace tout IDF ≤ 0 par `eps = 0.25 × average_idf`, donc
+  même les stop words contribuent ≈ 1,15 au score.
+
+V2.1 est une variante de tokenisation, pas un changement de
+pipeline retrieval :
+
+- Seule nouveauté : filtre d'une liste publique de stop words
+  français **après la tokenisation V2** (nombres regroupés,
+  accents retirés, apostrophes découpées).
+- **Pas d'autre changement** : `k1=1.5`, `b=0.75`, `k_RRF=60`,
+  listes top-50, filtre entreprise avant top-50, tie-break
+  chunk_id — tout est identique V2.
+- Même tokenisation appliquée aux chunks et aux questions.
+- Même critère §4 (R@5 strictement > 19/27, MRR en départage).
+
+### Source de la liste de stop words
+
+**NLTK 3.9, corpus `stopwords`, fichier `french`**, licence
+Apache 2.0. Référence :
+https://github.com/nltk/nltk_data, paquet `corpora/stopwords`,
+fichier `french`.
+
+Liste recopiée **verbatim** dans `bilanlens/bm25.py` sous
+`_STOP_WORDS_FR_NLTK_VERBATIM`, puis normalisée localement
+(minuscules + NFKD + retrait des accents) pour matcher les
+tokens V2. La liste contient ~170 mots (articles, prépositions,
+auxiliaires conjugués à toutes les personnes, lettres isolées
+produites par les apostrophes françaises comme « l », « d »,
+« c »). Je n'ai PAS construit la liste à partir des 31
+questions.
+
+### Décision post-hoc : traçabilité
+
+Ce n'est pas un hyperparamètre ex ante. V2.1 a été décidée
+**après** avoir vu que V2 BM25 restait à 13/27 au R@5 malgré
+l'IDF supposé-trier. Le critère §4 est préservé tel quel
+(`Recall@5 > 19/27` strict). Trois leviers à distinguer :
+
+1. Hyperparamètres BM25 / RRF (§3) : fixés avant mesure,
+   inchangés. Pas de fit benchmark.
+2. Filtre entreprise (§1) : construit à la main, confirmé sur
+   les 31 Q. Reconnu comme fit benchmark (§8).
+3. Liste stop words (V2.1) : décidée après mesure V2. Reconnu
+   comme fit benchmark (§8). Validation externe requise.
+
+### Résultats V2 → V2.1 (sur 27 Q avec page attendue)
+
+| Config | V2 R@5 | V2.1 R@5 | Δ | V2 MRR | V2.1 MRR | ΔMRR |
+|---|---|---|---|---|---|---|
+| dense | 19 | 19 | ± | 0.5430 | 0.5430 | ± |
+| **bm25** | 13 | **18** | **+5** | 0.3676 | 0.5031 | **+0.1354** |
+| **hybride_rrf** | 15 | **19** | **+4** | 0.4591 | 0.5961 | **+0.1370** |
+| dense_filtre | 20 | 20 | ± | 0.5803 | 0.5803 | ± |
+| **hybride_filtre** | 19 | **22** | **+3** | 0.6721 | 0.7136 | **+0.0415** |
+
+Dense et dense_filtre sont strictement invariants (le tokenizer
+ne joue que sur BM25). Toutes les configs qui font appel à BM25
+gagnent au R@5. La plus grande amélioration en valeur relative
+est bm25 seul (+5 sur une base de 13).
+
+### Rangs des 6 Q d'intérêt, V2.1
+
+| qid | dense | bm25 | hybride_rrf | dense_filtre | hybride_filtre |
+|---|---|---|---|---|---|
+| Q12 (monoprix_consolide, texte_annexes) | 6 | 1 | 1 | 6 | **1** |
+| Q14 (monoprix_individuel, calcul) | 3 | — | 10 | **2** | **2** |
+| Q21 (sfbt, texte_annexes) | — | 1 | 18 | — | 11 |
+| Q23 (ciments_bizerte, calcul 2 pages) | 1,6 | —,9 | —,3 | 1,6 | 9,1 |
+| Q25 (ciments_bizerte, texte_annexes) | 9 | 1 | 2 | 9 | **1** |
+| Q30 (delice_holding, extraction) | — | 13 | 10 | 15 | **4** |
+
+Notable V2.1 vs V2 :
+
+- Q30 passe du rang 8 (V2 hybride_filtre) au rang 4 (V2.1
+  hybride_filtre) → entre dans le top-5.
+- Q14 passe du rang 8 (V2 hybride_filtre) au rang 2 (V2.1
+  hybride_filtre) → la régression V2 est effacée.
+- Q21 reste à rang 11 côté hybride_filtre V2.1 : même avec
+  stop words retirés, le dense + le BM25 ne la remontent pas en
+  top-5. Elle est structurellement difficile (méthode
+  d'évaluation des stocks noyée dans un long texte d'annexe).
+
+### Gains / pertes vs dense (R@5) — V2.1
+
+- bm25 : +4 (Q07, Q12, Q21, Q25) / −5 (Q01, Q13, Q14, Q24, Q27).
+  Net = −1, mais R@5 reste à 18 car Q21 est un gain net.
+- hybride_rrf : +3 / −3. Net = 0, mais toutes gagnées sont des
+  texte_annexes et toutes perdues sont des calculs / extractions.
+- dense_filtre : +1 (Q20) / −0.
+- **hybride_filtre** : +4 (Q07, Q12, Q25, Q30) / −1 (Q13).
+  Net = +3.
+
+### Décision §4 (critère INCHANGÉ)
+
+**Config retenue : `v2.1 / hybride_filtre`** (R@5 = 22/27,
+MRR = 0.7136).
+
+Impact sur les 4 Q `problemes_recherche` V1 :
+
+| qid | rangs top-5 ? |
+|---|---|
+| Q12 monoprix_consolide (texte_annexes) | rang 1 → **DANS top-5** |
+| Q21 sfbt (texte_annexes) | rang 11 → **HORS top-5** |
+| Q25 ciments_bizerte (texte_annexes) | rang 1 → **DANS top-5** |
+| Q30 delice_holding (extraction) | rang 4 → **DANS top-5** |
+
+**3 des 4 Q `problemes_recherche` V1 entrent en top-5.** Q21
+reste hors top-5 malgré V2.1, et devra être traitée par un
+levier différent (chunking plus fin, ou passage sur PDF
+corrigé, ou prompt-level — pas un correctif retrieval).
+
+### Regroupement des nombres — comportement réel
+
+Observation et documentation (pas de code modifié) :
+
+- La règle V2 `(?<=\d) (?=\d)` fusionne **tous** les chiffres
+  séparés par un seul espace, sans détection de groupes. Sur
+  `monoprix_consolide_2024` p.21, 2 colonnes sont fusionnées à
+  l'extraction PDF (OCR / pdfplumber) : exemple
+  « 732 595 162 684 081 159 » devient un seul token de 18
+  chiffres. Pas de règle spéciale.
+- Une version plus stricte (par exemple : ne regrouper que des
+  séquences de blocs 3-chiffres encadrés par un caractère
+  non-chiffre) a été envisagée. Elle **ne changerait rien au
+  BM25 seul** sur ce benchmark : un token de 18 chiffres a un
+  IDF très élevé, certes, mais il ne match aucune question (les
+  31 questions ne contiennent pas cette suite de chiffres).
+  Comme la règle stricte complexifie le code sans gain mesuré,
+  elle n'est pas adoptée.
+- Avertissement documentation : si un futur benchmark introduit
+  une question qui tape le milieu d'une colonne fusionnée (ex.
+  « 162 684 081 »), le match BM25 échouera parce que le chunk
+  contiendra `732595162684081159` et la question
+  `162684081`. À surveiller si le PDF subit un re-extraction
+  corrigée.
+
+### Enseignements méthodologiques
+
+- **« L'IDF du corpus fait le tri » est un argument à vérifier,
+  pas une intuition.** Le plancher epsilon de `BM25Okapi`
+  (0.25 × average IDF) invalide cette intuition sur un corpus
+  domain-specific où presque tout document contient les mots
+  les plus courants.
+- **La décision post-hoc est légitime SI elle est tracée.** Ce
+  qui est problématique : prétendre ex ante une décision
+  réellement prise après mesure. Ce qui est propre :
+  reconnaître dans le journal que la décision a été prise APRÈS
+  mesure et l'ajouter à la liste de risques de fit benchmark.
+  V2.1 a été décidée après mesure V2 → documenté comme tel,
+  critère §4 préservé, liste stop words sourcée indépendamment
+  (NLTK, pas construite depuis les 31 Q).
+- **Les gains BM25 sur « texte_annexes » généralisent-ils ?**
+  Validation externe requise. Sur ce benchmark, 3 des 4
+  texte_annexes problématiques sont remontées en top-1 par
+  BM25. Mais c'est 4 cas → c'est un signal, pas une preuve.
+  Un benchmark neuf avec plus de Q d'annexes financières dirait
+  si BM25 est systématiquement meilleur que l'embedding sur ce
+  type de requête.
+- **Un meilleur agrégat (MRR 0.5430 → 0.7136) peut masquer des
+  régressions locales.** hybride_filtre V2.1 gagne +3 au R@5
+  mais perd Q13 (SNMVT-Monoprix extraction) qui passe hors
+  top-5. L'inspection Q par Q reste indispensable.
+
+### Fichiers modifiés / créés
+
+- `bilanlens/bm25.py` — ajout `STOP_WORDS_FR` (source NLTK FR,
+  verbatim + normalisation locale) + `tokeniser_v2_1` + paramètre
+  `tokenizer` sur `IndexBM25`.
+- `scripts/benchmark_retrieval.py` — lance V2 + V2.1 (2
+  variantes × 5 configs = 10 configurations), rapport comparatif,
+  §4 décision sur l'ensemble.
+- `tests/test_bm25.py` — +9 tests V2.1 (stop words list,
+  tokeniser_v2_1, IndexBM25 avec tokenizer custom).
+- `tests/test_benchmark_retrieval.py` — **25 nouveaux tests** sur
+  fausses données (dense_top_k, enrichir, agreger,
+  choisir_configuration, valider_dense_vs_v1, lancer_5_configs,
+  ecrire_sortie, _hash_cle cohérence avec bilanlens.embeddings).
+- `results/retrieval_compare.jsonl` — 2 × 5 × 31 = 310 lignes
+  (champ `variante` ajouté).
+- `docs/journal.md` — correction §3 Plan V2 (note post-hoc sur
+  les stop words) + cette entrée.
+
+Suite totale : **351 passed, 3 deselected** (zéro régression).
+
+### Ce qui reste (bloqué par feu vert)
+
+- `scripts/evaluate_v2.py` : pipeline V2 avec la config retenue
+  `v2.1 / hybride_filtre` + prompt V1.2 inchangé + k=5 contexte.
 - `scripts/score.py --mode v2` : scoring V2 vs V1.2.
 - UN run LLM V2 (après feu vert).
 

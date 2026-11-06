@@ -38,7 +38,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from bilanlens.bm25 import IndexBM25  # noqa: E402
+from bilanlens.bm25 import IndexBM25, tokeniser, tokeniser_v2_1  # noqa: E402
 from bilanlens.filtre_question import entreprises_filtre  # noqa: E402
 from bilanlens.retrieval_hybride import (  # noqa: E402
     K_RRF,
@@ -276,9 +276,15 @@ def lancer_5_configs(
     bm25_global: IndexBM25,
     top_fusion: int,
     top_final: int,
+    tokenizer=tokeniser,
 ) -> dict[str, list[dict]]:
     """Lance les 5 configs pour une question. Retourne un dict
-    {nom_config : top_final résultats enrichis (doc, page)}."""
+    {nom_config : top_final résultats enrichis (doc, page)}.
+
+    ``tokenizer`` sert uniquement à reconstruire l'index BM25
+    filtré sur le sous-périmètre d'entreprise, avec les mêmes
+    règles de tokenisation que ``bm25_global``.
+    """
     out: dict[str, list[dict]] = {}
 
     # --- dense (global) ---
@@ -315,11 +321,12 @@ def lancer_5_configs(
             chunk_ids_filtre=chunk_ids_perimetre,
         )
         # BM25 filtré : on reconstruit un index sur le sous-ensemble
-        # (IDF recalculé sur le périmètre, cf. §3).
+        # (IDF recalculé sur le périmètre, cf. §3). Même tokenizer
+        # que l'index global.
         chunks_perimetre = [
             c for c in chunks if c["doc"] in docs_filtre
         ]
-        bm25_filtre = IndexBM25(chunks_perimetre)
+        bm25_filtre = IndexBM25(chunks_perimetre, tokenizer=tokenizer)
         bm25_filtre_top50 = bm25_filtre.rechercher(
             question["question"], top_fusion,
         )
@@ -376,35 +383,50 @@ def agreger(
 # Choix de configuration selon §4
 # ------------------------------------------------------------------
 
-def choisir_configuration(stats: dict[str, dict]) -> tuple[str | None, str]:
-    """Retourne (config_elue, justification)."""
-    candidats = [
-        (nom, s["recall_at"][5], s["mrr"])
-        for nom, s in stats.items()
-    ]
-    # Garde la config par Recall@5 décroissant, MRR décroissant.
-    candidats.sort(key=lambda t: (-t[1], -t[2]))
+def choisir_configuration(
+    stats_par_variante: dict[str, dict[str, dict]],
+) -> tuple[tuple[str, str] | None, str]:
+    """§4 : meilleur R@5 strictement > SEUIL_RECALL_5 toutes variantes.
+
+    Entrée : {variante: {config: {recall_at, mrr, ...}}}.
+    Sortie : ((variante, config), justification) ou (None, ...).
+    """
+    candidats = []
+    for variante, stats in stats_par_variante.items():
+        for nom, s in stats.items():
+            candidats.append(
+                (variante, nom, s["recall_at"][5], s["mrr"])
+            )
+    # Tri par R@5 décroissant, MRR décroissant.
+    candidats.sort(key=lambda t: (-t[2], -t[3]))
     tete = candidats[0]
-    if tete[1] <= SEUIL_RECALL_5:
+    if tete[2] <= SEUIL_RECALL_5:
         return None, (
-            f"Aucune config ne dépasse strictement {SEUIL_RECALL_5}/27 "
-            f"au Recall@5. Meilleure : {tete[0]} à {tete[1]}/27. "
+            f"Aucune config ne dépasse strictement "
+            f"{SEUIL_RECALL_5}/27 au Recall@5. Meilleure : "
+            f"{tete[0]}/{tete[1]} à {tete[2]}/27. "
             f"→ On garde le dense V1, pas de run LLM V2."
         )
-    # En cas d'égalité stricte sur R@5 ET MRR, préférer la config
-    # la plus simple (ordre CONFIGS : dense < bm25 < hybride <
-    # dense_filtre < hybride_filtre).
-    egaux = [c for c in candidats if c[1] == tete[1] and c[2] == tete[2]]
+    egaux = [
+        c for c in candidats if c[2] == tete[2] and c[3] == tete[3]
+    ]
     if len(egaux) > 1:
-        rang = {c: i for i, c in enumerate(CONFIGS)}
-        egaux.sort(key=lambda t: rang[t[0]])
-        return egaux[0][0], (
-            f"Config retenue : {egaux[0][0]} (R@5={tete[1]}/27, "
-            f"MRR={tete[2]:.4f}). Égalité départagée par simplicité."
+        # Départage par simplicité : préférer V2 à V2.1, puis
+        # l'ordre canonique des configs.
+        rang_config = {c: i for i, c in enumerate(CONFIGS)}
+        rang_variante = {"v2": 0, "v2.1": 1}
+        egaux.sort(
+            key=lambda t: (rang_variante[t[0]], rang_config[t[1]])
         )
-    return tete[0], (
-        f"Config retenue : {tete[0]} (R@5={tete[1]}/27, "
-        f"MRR={tete[2]:.4f})."
+        v, c = egaux[0][0], egaux[0][1]
+        return (v, c), (
+            f"Config retenue : {v}/{c} (R@5={tete[2]}/27, "
+            f"MRR={tete[3]:.4f}). Égalité départagée par simplicité "
+            f"(V2 avant V2.1, config la plus simple)."
+        )
+    return (tete[0], tete[1]), (
+        f"Config retenue : {tete[0]}/{tete[1]} "
+        f"(R@5={tete[2]}/27, MRR={tete[3]:.4f})."
     )
 
 
@@ -412,53 +434,26 @@ def choisir_configuration(stats: dict[str, dict]) -> tuple[str | None, str]:
 # Rapport console
 # ------------------------------------------------------------------
 
-def imprimer_rapport(
-    stats: dict[str, dict],
-    resultats_par_config: dict[str, dict[str, list[dict]]],
-    benchmark: list[dict],
-    filtres_par_qid: dict[str, list[str] | None],
-) -> None:
-    benchmark_par_qid = {q["id"]: q for q in benchmark}
+def _table_configs(stats: dict[str, dict], titre: str) -> None:
     print("=" * 72)
-    print("RECALL@k et MRR par configuration (sur 27 Q avec page attendue)")
+    print(titre)
     print("=" * 72)
-    print(f"{'Config':<20} {'R@1':>5} {'R@3':>5} {'R@5':>5} {'R@10':>5} "
-          f"{'R@20':>5} {'MRR':>8}")
+    print(f"{'Config':<20} {'R@1':>5} {'R@3':>5} {'R@5':>5} "
+          f"{'R@10':>5} {'R@20':>5} {'MRR':>8}")
     for config in CONFIGS:
         s = stats[config]
         print(f"{config:<20} "
               f"{s['recall_at'][1]:>5} {s['recall_at'][3]:>5} "
               f"{s['recall_at'][5]:>5} {s['recall_at'][10]:>5} "
               f"{s['recall_at'][20]:>5} {s['mrr']:>8.4f}")
-    print()
 
-    print("=" * 72)
-    print("Rangs des pages attendues — questions d'intérêt (6 Q)")
-    print("=" * 72)
-    print(f"{'qid':<32} ", end="")
-    for config in CONFIGS:
-        print(f"{config[:14]:>14} ", end="")
-    print()
-    for qid in Q_INTERET:
-        q = benchmark_par_qid[qid]
-        attendues = pages_attendues(q)
-        print(f"{qid:<32} ", end="")
-        for config in CONFIGS:
-            rangs = rangs_pages_attendues(
-                attendues, resultats_par_config[qid][config],
-            )
-            # Format compact : rang de chaque page (-1 = non trouvé)
-            txt = ",".join(
-                str(v) if v != -1 else "-"
-                for v in rangs.values()
-            ) or "(aucune)"
-            print(f"{txt:>14} ", end="")
-        print()
-    print()
 
-    print("=" * 72)
-    print("Gains / pertes vs dense (sur R@5)")
-    print("=" * 72)
+def _diff_gains_pertes(
+    variante: str,
+    resultats_par_config: dict[str, dict[str, list[dict]]],
+    benchmark: list[dict],
+) -> None:
+    print(f"\n[{variante}] Gains / pertes vs dense (R@5)")
     dense_ok_par_qid = {}
     for q in benchmark:
         attendues = pages_attendues(q)
@@ -483,40 +478,159 @@ def imprimer_rapport(
                 gains.append(q["id"])
             elif dense_ok and not ok:
                 pertes.append(q["id"])
-        print(f"\n{config}:")
-        print(f"  + gains  ({len(gains)}) : "
+        print(f"  {config}:")
+        print(f"    + gains  ({len(gains)}) : "
               f"{', '.join(gains) if gains else '(aucun)'}")
-        print(f"  - pertes ({len(pertes)}) : "
+        print(f"    - pertes ({len(pertes)}) : "
               f"{', '.join(pertes) if pertes else '(aucune)'}")
+
+
+def _rangs_q_interet(
+    variante: str,
+    resultats_par_config: dict[str, dict[str, list[dict]]],
+    benchmark_par_qid: dict[str, dict],
+) -> None:
+    print(f"\n[{variante}] Rangs des pages attendues — 6 Q d'intérêt")
+    print(f"{'qid':<32} ", end="")
+    for config in CONFIGS:
+        print(f"{config[:14]:>14} ", end="")
+    print()
+    for qid in Q_INTERET:
+        q = benchmark_par_qid[qid]
+        attendues = pages_attendues(q)
+        print(f"{qid:<32} ", end="")
+        for config in CONFIGS:
+            rangs = rangs_pages_attendues(
+                attendues, resultats_par_config[qid][config],
+            )
+            txt = ",".join(
+                str(v) if v != -1 else "-" for v in rangs.values()
+            ) or "(aucune)"
+            print(f"{txt:>14} ", end="")
+        print()
+
+
+def _config_elue_entre_q_sensibles_dans_top5(
+    config_elue_pair: tuple[str, str],
+    resultats_par_variante: dict[str, dict[str, dict[str, list[dict]]]],
+    benchmark_par_qid: dict[str, dict],
+) -> None:
+    """Pour la config élue, indique si Q12/Q21/Q25/Q30 passent en top-5."""
+    variante, config = config_elue_pair
+    print()
+    print(f"  Impact sur Q12, Q21, Q25, Q30 "
+          f"(les 4 problemes_recherche V1) — top-5 ?")
+    qids_sensibles = [
+        "monoprix_consolide_2024_12",
+        "sfbt_2024_21",
+        "ciments_bizerte_2024_25",
+        "delice_holding_2024_30",
+    ]
+    for qid in qids_sensibles:
+        q = benchmark_par_qid[qid]
+        attendues = pages_attendues(q)
+        resultats = resultats_par_variante[variante][qid][config]
+        dans_top5 = recall_at(attendues, resultats, 5)
+        rangs = rangs_pages_attendues(attendues, resultats)
+        rangs_txt = ",".join(
+            str(v) if v != -1 else "-" for v in rangs.values()
+        )
+        statut = "DANS top-5" if dans_top5 else "HORS top-5"
+        print(f"    {qid:<32} rangs={rangs_txt:<10} {statut}")
+
+
+def imprimer_rapport(
+    stats_par_variante: dict[str, dict[str, dict]],
+    resultats_par_variante: dict[str, dict[str, dict[str, list[dict]]]],
+    benchmark: list[dict],
+    filtres_par_qid: dict[str, list[str] | None],
+) -> None:
+    benchmark_par_qid = {q["id"]: q for q in benchmark}
+
+    # Table V2
+    _table_configs(
+        stats_par_variante["v2"],
+        "V2 — tokenisation stop-words CONSERVÉS (sur 27 Q avec page)",
+    )
+    print()
+    # Table V2.1
+    _table_configs(
+        stats_par_variante["v2.1"],
+        "V2.1 — tokenisation stop-words FILTRÉS (NLTK FR, post-hoc)",
+    )
     print()
 
+    # Diff V2.1 vs V2 au R@5
+    print("=" * 72)
+    print("Évolution V2 → V2.1 au R@5 (Δ = V2.1 - V2)")
+    print("=" * 72)
+    print(f"{'Config':<20} {'V2 R@5':>8} {'V2.1 R@5':>10} {'Δ':>6} "
+          f"{'V2 MRR':>8} {'V2.1 MRR':>10} {'ΔMRR':>8}")
+    for config in CONFIGS:
+        v2 = stats_par_variante["v2"][config]
+        v2_1 = stats_par_variante["v2.1"][config]
+        diff_r5 = v2_1["recall_at"][5] - v2["recall_at"][5]
+        diff_mrr = v2_1["mrr"] - v2["mrr"]
+        signe = "+" if diff_r5 > 0 else ("±" if diff_r5 == 0 else "")
+        print(f"{config:<20} "
+              f"{v2['recall_at'][5]:>8} "
+              f"{v2_1['recall_at'][5]:>10} "
+              f"{signe}{diff_r5:>5} "
+              f"{v2['mrr']:>8.4f} "
+              f"{v2_1['mrr']:>10.4f} "
+              f"{diff_mrr:>+8.4f}")
+    print()
+
+    # Rangs 6 Q d'intérêt par variante
+    print("=" * 72)
+    print("Rangs des pages attendues — 6 Q d'intérêt")
+    print("=" * 72)
+    for variante in ("v2", "v2.1"):
+        _rangs_q_interet(
+            variante, resultats_par_variante[variante], benchmark_par_qid,
+        )
+    print()
+
+    # Gains / pertes par variante
+    print("=" * 72)
+    print("Gains / pertes vs dense (R@5)")
+    print("=" * 72)
+    for variante in ("v2", "v2.1"):
+        _diff_gains_pertes(
+            variante, resultats_par_variante[variante], benchmark,
+        )
+    print()
+
+    # Couverture filtre
     print("=" * 72)
     print("Couverture du filtre entreprise (sur 31 Q)")
     print("=" * 72)
-    filtre_mono = sum(
-        1 for v in filtres_par_qid.values()
-        if v is not None and len(v) == 1
-    )
-    filtre_ambigu = sum(
-        1 for v in filtres_par_qid.values()
-        if v is not None and len(v) > 1
-    )
+    filtre_mono = sum(1 for v in filtres_par_qid.values()
+                      if v is not None and len(v) == 1)
+    filtre_ambigu = sum(1 for v in filtres_par_qid.values()
+                        if v is not None and len(v) > 1)
     sans_filtre = sum(1 for v in filtres_par_qid.values() if v is None)
-    print(f"  Q à entreprise unique     : {filtre_mono}/31")
+    print(f"  Q à entreprise unique        : {filtre_mono}/31")
     print(f"  Q à 2 docs (Monoprix ambigu) : {filtre_ambigu}/31")
-    print(f"  Q sans filtre (hors scope) : {sans_filtre}/31")
+    print(f"  Q sans filtre (hors scope)   : {sans_filtre}/31")
     print()
 
+    # §4 sur l'ensemble (V2 + V2.1)
     print("=" * 72)
-    print("Décision §4")
+    print("Décision §4 (critère INCHANGÉ : R@5 strictement > 19/27)")
     print("=" * 72)
-    config_elue, justification = choisir_configuration(stats)
+    pair_elue, justification = choisir_configuration(stats_par_variante)
     print(f"  {justification}")
-    if config_elue:
+    if pair_elue:
+        _config_elue_entre_q_sensibles_dans_top5(
+            pair_elue, resultats_par_variante, benchmark_par_qid,
+        )
+        print()
         print(f"  → Feu vert pour UN run LLM V2 avec la config : "
-              f"{config_elue}")
+              f"{pair_elue[0]}/{pair_elue[1]}")
     else:
-        print("  → PAS de run LLM V2. On reste sur dense V1 (V1.2 figé).")
+        print("  → PAS de run LLM V2. On reste sur dense V1 "
+              "(V1.2 figé).")
     print()
 
 
@@ -526,28 +640,33 @@ def imprimer_rapport(
 
 def ecrire_sortie(
     sortie_path: Path,
-    resultats_par_config: dict[str, dict[str, list[dict]]],
+    resultats_par_variante: dict[str, dict[str, dict[str, list[dict]]]],
     filtres_par_qid: dict[str, list[str] | None],
     benchmark: list[dict],
 ) -> None:
+    """Écrit une ligne par (variante, config, question)."""
     sortie_path.parent.mkdir(parents=True, exist_ok=True)
     with sortie_path.open("w", encoding="utf-8") as dst:
-        for q in benchmark:
-            qid = q["id"]
-            for config in CONFIGS:
-                record = {
-                    "question_id": qid,
-                    "config": config,
-                    "filtre_entreprise": filtres_par_qid[qid],
-                    "retrieved_top20": [
-                        {"rank": r["rank"], "chunk_id": r["chunk_id"],
-                         "doc": r["doc"],
-                         "page_physique": r["page_physique"],
-                         "sous_numero": r["sous_numero"]}
-                        for r in resultats_par_config[qid][config]
-                    ],
-                }
-                dst.write(json.dumps(record, ensure_ascii=False) + "\n")
+        for variante, resultats_par_config in resultats_par_variante.items():
+            for q in benchmark:
+                qid = q["id"]
+                for config in CONFIGS:
+                    record = {
+                        "variante": variante,
+                        "question_id": qid,
+                        "config": config,
+                        "filtre_entreprise": filtres_par_qid[qid],
+                        "retrieved_top20": [
+                            {"rank": r["rank"], "chunk_id": r["chunk_id"],
+                             "doc": r["doc"],
+                             "page_physique": r["page_physique"],
+                             "sous_numero": r["sous_numero"]}
+                            for r in resultats_par_config[qid][config]
+                        ],
+                    }
+                    dst.write(
+                        json.dumps(record, ensure_ascii=False) + "\n"
+                    )
 
 
 # ------------------------------------------------------------------
@@ -602,27 +721,44 @@ def main() -> int:
         return 1
     print(f"  {len(vecteurs_q)} vecteurs questions OK")
 
-    print("Construction BM25 global sur les 247 chunks...")
-    bm25_global = IndexBM25(chunks)
+    print("Construction BM25 global V2 (stop-words conservés)...")
+    bm25_global_v2 = IndexBM25(chunks, tokenizer=tokeniser)
+    print("Construction BM25 global V2.1 (stop-words NLTK FR filtrés)...")
+    bm25_global_v2_1 = IndexBM25(chunks, tokenizer=tokeniser_v2_1)
 
-    print("Lancement des 5 configurations pour les 31 Q (zéro LLM)...")
-    resultats_par_config: dict[str, dict[str, list[dict]]] = {}
+    print("Lancement des 5 configurations × 2 variantes (zéro LLM)...")
     filtres_par_qid: dict[str, list[str] | None] = {}
+    resultats_par_variante: dict[
+        str, dict[str, dict[str, list[dict]]]
+    ] = {"v2": {}, "v2.1": {}}
     for q in benchmark:
         qid = q["id"]
         q_vec = vecteurs_q[qid]
         filtres_par_qid[qid] = entreprises_filtre(q["question"])
-        resultats_par_config[qid] = lancer_5_configs(
+        resultats_par_variante["v2"][qid] = lancer_5_configs(
             question=q, q_vec=q_vec,
             chunks=chunks, chunks_par_id=chunks_par_id,
             vecteurs_chunks=vecteurs_chunks,
-            bm25_global=bm25_global,
+            bm25_global=bm25_global_v2,
             top_fusion=TAILLE_LISTES_AVANT_FUSION,
             top_final=20,
+            tokenizer=tokeniser,
+        )
+        resultats_par_variante["v2.1"][qid] = lancer_5_configs(
+            question=q, q_vec=q_vec,
+            chunks=chunks, chunks_par_id=chunks_par_id,
+            vecteurs_chunks=vecteurs_chunks,
+            bm25_global=bm25_global_v2_1,
+            top_fusion=TAILLE_LISTES_AVANT_FUSION,
+            top_final=20,
+            tokenizer=tokeniser_v2_1,
         )
 
     print("Validation : dense recalculé == retrieval_top20.jsonl ?")
-    dense_par_qid = {qid: r["dense"] for qid, r in resultats_par_config.items()}
+    # Le dense ne dépend pas du tokenizer, on vérifie une seule fois.
+    dense_par_qid = {
+        qid: r["dense"] for qid, r in resultats_par_variante["v2"].items()
+    }
     ok, erreurs = valider_dense_vs_v1(dense_par_qid, TOP20_V1_PATH)
     if not ok:
         print(f"  ÉCHEC : {len(erreurs)} Q divergent du top-20 V1.")
@@ -630,15 +766,24 @@ def main() -> int:
             print(f"  --- divergence ---")
             print(f"  {e}")
         return 2
-    print("  OK : les 31 Q ont exactement les mêmes 20 premiers chunk_ids.")
+    print("  OK : les 31 Q ont exactement les mêmes 20 premiers "
+          "chunk_ids (variante V2).")
 
-    print("Agrégation des métriques...")
-    stats = agreger(resultats_par_config, benchmark)
+    print("Agrégation des métriques par variante...")
+    stats_par_variante = {
+        "v2": agreger(resultats_par_variante["v2"], benchmark),
+        "v2.1": agreger(resultats_par_variante["v2.1"], benchmark),
+    }
 
-    print("Écriture results/retrieval_compare.jsonl...")
-    ecrire_sortie(SORTIE_PATH, resultats_par_config, filtres_par_qid, benchmark)
+    print("Écriture results/retrieval_compare.jsonl (V2 + V2.1)...")
+    ecrire_sortie(
+        SORTIE_PATH, resultats_par_variante, filtres_par_qid, benchmark,
+    )
 
-    imprimer_rapport(stats, resultats_par_config, benchmark, filtres_par_qid)
+    imprimer_rapport(
+        stats_par_variante, resultats_par_variante, benchmark,
+        filtres_par_qid,
+    )
     return 0
 
 
