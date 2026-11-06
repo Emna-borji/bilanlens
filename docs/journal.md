@@ -3462,3 +3462,132 @@ deselected**.
   et pour quelle raison ? ») — PAS avant feu vert explicite.
 
 
+
+---
+
+## 2026-11-06 (soir, 4) — Jeu de validation (Partie A) : 15 Q nouvelles
+
+### Ce que j'ai fait
+
+Écrit `data/benchmark/questions_validation.jsonl` : **15 questions
+nouvelles** sur les 6 mêmes rapports BVMT 2024, même format que
+`questions.jsonl`. Rédaction à partir des PDFs et chunks
+uniquement (sans consulter aucun `results/v*.jsonl`,
+`retrieval_compare.jsonl` ou `retrieval_top20.jsonl`). La date
+du commit prouve que les 15 Q existent AVANT tout run LLM sur
+ce jeu.
+
+Distribution (vérifiée par test) : 4 extractions, 4 calculs
+(dont 2 autonomies sur Ciments de Bizerte et Monoprix
+individuel, deux sociétés non-tested dans les 31 Q), 2
+comparaisons, 3 texte_annexes, 2 sans_reponse dont 1 sans
+société nommée.
+
+### Après feedback utilisateur — 3 corrections
+
+1. **val_07 remplacée** : le taux de distribution Délice 2024
+   (dividende unitaire / résultat par action) mélangeait deux
+   exercices : le dividende 0,600 TND/action avait été versé en
+   2024 sur le RÉSULTAT 2023 (AGO du 13/06/2024), et son produit
+   par le nombre d'actions donne 32 944 357 TND = réponse de
+   Q30 du benchmark principal. Remplacée par le **taux
+   d'amortissement cumulé des immobilisations corporelles de
+   la SFBT** (amortissements / brut, les deux valeurs sur la
+   page 2 bilan actif SFBT, non utilisée par les 31 Q).
+2. **val_12 remplacée** : la méthode de valorisation des
+   stocks matières premières Ciments (p. 14 du PDF) partageait
+   la page avec Q25 (capacité normale de production) et traitait
+   du même fond que Q21 (méthode de valorisation des stocks
+   SFBT). Remplacée par une question sur la **continuité
+   d'exploitation Ciments de Bizerte** : depuis le 15/10/2023
+   la société est en arrêt de production, à cause d'une rupture
+   d'approvisionnement en coke de pétrole et brique réfractaire
+   (page 15 Ciments, non utilisée par les 31 Q).
+3. **val_09 remplacée** : la variation des stocks nets SOTUVER
+   entre 2023 retraité et 2024 reprenait le thème de Q07
+   (retraitement NCT 11 sur les stocks SOTUVER). Remplacée par
+   la **variation du total des actifs SOTUVER 2023 → 2024**
+   (augmentation de 73 485 721 TND, les deux valeurs sur
+   page 2 bilan actif SOTUVER). Pour les actifs totaux, les
+   colonnes 2023 retraitée et publiée sont identiques, donc
+   l'ambiguïté NCT 11 ne se pose pas.
+4. **val_10 gardée** avec note explicite : elle est proche
+   de Q11 du benchmark principal (toutes deux portent sur
+   l'évolution d'un résultat net consolidé Monoprix, même page
+   p. 4 du rapport), mais Q11 cible la PART DU GROUPE (variation
+   5 859 229) et val_10 cible l'ENSEMBLE consolidé avant
+   répartition (variation 6 042 450). La proximité est
+   documentée dans les notes de val_10.
+
+### Limitations du jeu de validation documentées ex ante
+
+- **val_14 est la seule Q « Monoprix » sans qualifier, mais elle
+  est de catégorie `sans_reponse`.** Elle teste que le filtre
+  V2 ne plante pas sur une Q Monoprix ambigüe (périmètre = 2
+  docs), et que le modèle maintient son abstention quand la
+  donnée n'existe dans aucun des deux rapports. Elle **ne teste
+  PAS** le choix du modèle entre bilan individuel et bilan
+  consolidé face à une Q ambigüe sur une donnée réelle. Cette
+  Q manque dans le benchmark actuel et dans le jeu de
+  validation ; à ajouter dans un prochain jeu étendu.
+- **La couverture `sans filtre` est limitée.** val_15 (taux
+  d'inflation Tunisie, sans société) est la seule Q qui
+  exerce le chemin `filtre_question.entreprises_filtre →
+  None`. Un seul cas, peu robuste statistiquement.
+- **Pas de Q `calcul` avec valeurs inter-pages sur 2 chunks
+  sans overlap textuel.** Les calculs multi-page (val_06, et
+  anciennement val_07) ne testent pas le cas « valeurs sur
+  2 pages totalement différentes sans aucun chevauchement
+  lexical » qui serait le vrai stress du retrieval.
+
+### Pages utilisées par le jeu de validation (post-correctifs)
+
+Les 31 Q du benchmark principal couvrent les pages suivantes :
+- sotuver_2024 : {3, 4, 9}
+- monoprix_2024 : {5}
+- monoprix_consolide_2024 : {3, 4, 13}
+- sfbt_2024 : {3, 4, 8}
+- ciments_bizerte_2024 : {2, 4, 14}
+- delice_holding_2024 : {2, 3, 4, 7}
+
+Les 15 Q du jeu de validation ajoutent les pages suivantes
+(nouvelles pages, hors benchmark principal) :
+- sotuver_2024 : p. 2 (val_01 immob nettes, val_09 total actifs)
+- monoprix_2024 : p. 3 (val_02 total actifs, val_06 total actifs
+  intermediate), p. 4 (val_06 CP intermediate)
+- sfbt_2024 : p. 2 (val_07 amortissements/immob brutes), p. 6
+  (val_03 participation BGI)
+- ciments_bizerte_2024 : p. 3 (val_05 autonomie), p. 12
+  (val_11 marge brute négative), p. 15 (val_12 continuité
+  d'exploitation)
+- delice_holding_2024 : p. 13 (val_04 dividendes CLC), p. 16
+  (val_13 engagement SICAR AMEN)
+
+Seules deux Q du jeu de validation réutilisent une page
+benchmark : val_08 (ROA SFBT, p. 3) et val_10 (résultat net
+ensemble consolidé Monoprix, p. 4). Les deux sont documentées
+comme proches d'une Q benchmark.
+
+### Fichiers créés
+
+- `data/benchmark/questions_validation.jsonl` — 15 Q.
+- `tests/test_benchmark_validation.py` — 17 tests reprenant les
+  4 niveaux de `test_benchmark.py` (structure, arithmétique,
+  extraits PDF, sans_reponse mots-racines) + 5 contrôles
+  spécifiques (distribution, autonomies non-tested, sans
+  société, Monoprix sans qualifier, pas d'overlap avec les
+  31 Q).
+
+Suite totale : **380 passed, 3 deselected** (+17 depuis V2,
+zéro régression).
+
+### Ce qui reste (Partie B, bloquée par validation utilisateur)
+
+- Lancer V1.2 (dense) et V2 (v2.1/hybride_filtre) une seule
+  fois sur le jeu de validation, sans rien modifier au pipeline.
+- Ajouter un mode de score pour ce jeu.
+- Comparer aux 31 Q d'origine : bons résultats, justes,
+  fausses, Recall@5, MRR.
+- Aucune modification du prompt, de BM25, du filtre, de RRF.
+
+
