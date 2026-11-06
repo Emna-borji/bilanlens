@@ -2771,3 +2771,200 @@ généralisable.
   mesures**.
 - Aucun code V2 écrit, aucun run V2 lancé dans ce journal.
 
+
+---
+
+## 2026-11-06 (fin de journée) — V2 : code retrieval + benchmark 5 configs (sans LLM)
+
+### Ce que j'ai fait
+
+Appliqué le plan V2 §3 et §6 (étapes 1 à 4), sans toucher au
+prompt V1.2 et sans lancer de run LLM.
+
+Quatre modules / scripts créés :
+
+1. **`bilanlens/bm25.py`** — tokenisation V2 + index BM25 global.
+   - Tokenisation : lowercase, NFKD + retrait des accents,
+     regroupement nombres séparés par UN SEUL espace, points de
+     milliers compressés entre chiffres, découpe aux
+     apostrophes U+2019 et U+0027, pas de stemming, stop-words
+     conservés.
+   - BM25Okapi (rank_bm25 0.2.2) avec `k1=1.5`, `b=0.75`.
+   - Tie-break : `chunk_id` alphanumérique croissant.
+   - Tests : 18 cas (y compris le cas edge « 732 595 162 684 081 159 »
+     fusion de colonnes monoprix p.21 → un seul token, documenté
+     mais pas d'exception spéciale).
+2. **`bilanlens/filtre_question.py`** — détection entreprise.
+   - Table de synonymes versionnée pour les 4 entreprises simples
+     (SOTUVER, SFBT, Ciments de Bizerte, Délice Holding).
+   - Désambiguation Monoprix : mots-clés `consolide|consolidee|groupe`
+     → consolidé ; `snmvt|individuel|individuelle` → individuel ;
+     sinon → ambigu = garde les 2 docs.
+   - Entreprise non reconnue → `None` (pas de filtre).
+   - Filtre année : désactivé (§1, corpus tout 2024).
+   - Tests : 43 cas, dont les 31 Q du benchmark (toutes filtrées
+     correctement → couverture 100 %).
+3. **`bilanlens/retrieval_hybride.py`** — fusion RRF.
+   - `k_RRF=60`, listes top-50 avant fusion (§3 verrouillé).
+   - Tie-break : chunk_id croissant.
+   - Tests : 10 cas (cas réaliste 50+50, score cumulé 2 listes,
+     listes vides, tie-break, etc.).
+4. **`scripts/benchmark_retrieval.py`** — les 5 configs sur 31 Q,
+   zéro appel LLM, zéro appel réseau.
+   - Embeddings lus directement depuis
+     `data/cache_embeddings/gemini-embedding-2.jsonl` (sha256
+     identique à `bilanlens.embeddings._hash_cle`). 278 entrées
+     en cache couvrant 247 chunks (RETRIEVAL_DOCUMENT) + 31
+     questions (RETRIEVAL_QUERY).
+   - Cosine exact sur vecteurs unit-norm Gemini (produit scalaire).
+   - Pour les 2 configs filtrées, le filtre entreprise est appliqué
+     AVANT la construction des listes top-50 dense et BM25
+     (§2, « filtre avant »). Pour BM25 filtré, l'index est
+     reconstruit sur le périmètre (IDF recalculée sur le
+     sous-ensemble).
+   - Validation : dense recalculé vs `retrieval_top20.jsonl` →
+     **les 31 Q ont exactement les mêmes 20 premiers chunk_ids**.
+     Baseline V1 reproduite à l'identique.
+
+### Résultats des 5 configurations (27 Q avec page attendue)
+
+| Config | R@1 | R@3 | R@5 | R@10 | R@20 | MRR |
+|---|---|---|---|---|---|---|
+| **dense** (baseline V1) | 10 | 14 | **19** | 24 | 25 | 0.5430 |
+| bm25 | 8 | 12 | 13 | 13 | 14 | 0.3676 |
+| hybride_rrf | 9 | 14 | 15 | 16 | 25 | 0.4591 |
+| **dense_filtre** | 11 | 15 | **20** | 25 | 26 | 0.5803 |
+| hybride_filtre | 15 | 17 | 19 | 24 | 27 | 0.6721 |
+
+Dense V1 reproduit exactement **19/27** à Recall@5 — baseline
+validée.
+
+### Rangs des pages attendues — questions d'intérêt
+
+| qid | dense | bm25 | hybride_rrf | dense_filtre | hybride_filtre |
+|---|---|---|---|---|---|
+| monoprix_consolide_2024_12 | 6 | 1 | 1 | 6 | 1 |
+| monoprix_2024_14 | 3 | — | 20 | 2 | 8 |
+| sfbt_2024_21 | — | 1 | 15 | — | 8 |
+| ciments_bizerte_2024_23 | 6,1 | —,— | 8,15 | 6,1 | 1,10 |
+| ciments_bizerte_2024_25 | 9 | 1 | 2 | 9 | 1 |
+| delice_holding_2024_30 | — | — | 12 | 15 | 8 |
+
+Lecture (« a,b » = rang de chaque page attendue ;
+« — » = pas dans top-20) :
+
+- **Q12, Q25, Q21** (texte_annexes) : BM25 et hybride_filtre les
+  mettent au rang 1. Le dense seul (filtré ou non) les enterre
+  vers rang 6-9 (ou les rate comme Q21).
+- **Q14** (calcul, SNMVT-Monoprix) : le filtre entreprise aide
+  (3 → 2), mais hybride_filtre dégrade (3 → 8) : BM25 injecte
+  du bruit.
+- **Q23** (calcul ROA Ciments de Bizerte) : 2 pages attendues
+  (bilan + état résultat). Aucune config ne les met toutes les
+  deux dans le top-5 : la 2e page reste trop loin.
+- **Q30** (dividendes Délice) : l'extraction est toujours hors
+  top-5. `dense_filtre` et `hybride_filtre` la remontent dans
+  le top-20 mais pas dans le top-5.
+
+### Gains / pertes vs dense (sur R@5)
+
+- **bm25** : +4 (Q07, Q12, Q21, Q25) / −10. Catastrophique sur
+  les extractions / calculs classiques.
+- **hybride_rrf** : +3 / −7. Le BM25 non filtré injecte des
+  chunks d'autres sociétés qui flinguent dense.
+- **dense_filtre** : **+1 (Q20) / −0**. Le filtre entreprise
+  remonte la page de variation du capital social SFBT dans le
+  top-5 sans rien perdre.
+- **hybride_filtre** : +3 (Q07, Q12, Q25) / −3 (Q13, Q14, Q27).
+  Égalité au R@5 mais MRR nettement supérieur (0.6721 vs 0.5803).
+  BM25 déplace le bon chunk au rang 1 pour les Q d'annexes mais
+  pousse hors top-5 des extractions simples.
+
+### Couverture du filtre entreprise
+
+- 31 / 31 Q filtrées à entreprise unique.
+- 0 Q ambigüe (Monoprix désambiguation 100 % réussie sur ce
+  benchmark).
+- 0 Q sans filtre (toutes nomment leur société).
+
+C'est la **couverture 100 %** garde-fou §4. Mais c'est aussi un
+angle mort de ce benchmark : le cas « entreprise non reconnue »
+(donc pas de filtre) n'est jamais exercé.
+
+### Décision §4
+
+Critère : Recall@5 **strictement** supérieur à 19/27, départagé
+par MRR.
+
+**Config retenue : `dense_filtre`** (R@5 = 20/27, MRR = 0.5803).
+
+- `hybride_filtre` a un meilleur MRR (0.6721) mais son R@5 =
+  19/27 n'est PAS strictement supérieur à 19. Le critère est
+  écrit avant les mesures, donc on respecte : égalité = pas
+  retenu.
+- Les 3 autres configs (bm25, hybride_rrf, dense) sont
+  inférieures au R@5 du dense baseline.
+
+### Enseignements
+
+- **La reproducibilité du dense a été le test le plus informatif
+  avant d'ouvrir les métriques.** Si mon cosine manuel avait
+  divergé de V1, je ne saurais pas distinguer « amélioration
+  V2 » de « artefact numérique ». Le script avorte tant que les
+  20 premiers chunk_ids ne sont pas identiques Q par Q.
+- **Le BM25 seul perd beaucoup (R@5 = 13/27).** Les questions
+  d'extraction / comparaison / calcul nomment des concepts
+  comptables (« revenus », « capitaux propres », « autonomie
+  financière ») sans recoupement lexical suffisant avec les
+  pages du bilan qui donnent les chiffres. L'embedding
+  « comprend » ce lien, pas BM25.
+- **Hybride_rrf (sans filtre) est pire que dense.** Dans ce
+  corpus BVMT, BM25 remonte des chunks d'autres sociétés avec
+  des mots-clés communs (« capitaux propres », « stocks »). Ils
+  polluent la fusion RRF. La fusion gagne seulement quand on la
+  filtre d'abord par entreprise.
+- **Le filtre entreprise seul (sans BM25) est l'amélioration
+  gagnante.** +1 Q au R@5, 0 perte, implémentation simple.
+  C'est la configuration la plus parcimonieuse qui satisfait
+  le critère §4.
+- **Hybride_filtre a un meilleur MRR mais paye des pertes sur
+  des Q extraction simples.** 3 Q que dense remonte au rang
+  2-3 tombent au rang 8 à cause du mélange BM25. La fusion
+  déplace les rangs et change les perdants, pas seulement les
+  gagnants. Un meilleur MRR global masque des régressions
+  locales.
+- **Les 4 problemes_recherche V1 (Q12, Q21, Q25, Q30) : la
+  situation s'améliore mais reste mitigée.** Q12 et Q25
+  passent au rang 1 côté hybride_filtre. Q21 reste KO sur
+  dense (filtré ou non) et à rang 8 côté hybride_filtre. Q30
+  reste hors top-5 partout.
+- **Il faut 3 pages dans le top-5 pour Q23 ? Non, 2.** Aucune
+  config ne les retrouve toutes les deux dans le top-5. La
+  régression V1.2 sur Q23 ne peut pas être « réparée » par V2
+  dense_filtre : page attendue 2 reste au rang 6.
+
+### Fichiers créés / modifiés dans cette session
+
+- `bilanlens/bm25.py` — module BM25 + tokenisation.
+- `bilanlens/filtre_question.py` — détection entreprise.
+- `bilanlens/retrieval_hybride.py` — fusion RRF.
+- `scripts/benchmark_retrieval.py` — 5 configs, zéro LLM.
+- `tests/test_bm25.py` — 18 tests.
+- `tests/test_filtre_question.py` — 43 tests.
+- `tests/test_retrieval_hybride.py` — 10 tests.
+- `requirements.txt` — `rank_bm25==0.2.2` (épinglé §3).
+- `results/retrieval_compare.jsonl` — 1 ligne par
+  (config, question), 5 × 31 = 155 lignes.
+
+Suite totale : **317 passed, 3 deselected** (zéro régression).
+
+### Ce qui reste à faire (bloqué par feu vert)
+
+- `scripts/evaluate_v2.py` : pipeline V2 avec `dense_filtre` +
+  prompt V1.2 inchangé + k=5 contexte.
+- `scripts/score.py --mode v2` : scoring V2 vs V1.2.
+- UN run LLM V2 (après feu vert).
+
+Ne pas coder tant que le feu vert n'est pas donné.
+
+
