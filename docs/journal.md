@@ -2486,12 +2486,16 @@ change.
 ### Motivation
 
 Les 4 Q `problemes_recherche` V1 (Q12, Q21, Q25, Q30) ont
-`recall@5=KO` et `valeurs_dans_contexte=False`. Elles cherchent
-du texte annexe (méthodes comptables, informations rares) sur
-lesquelles l'embedding dense peine : les requêtes ne matchent
-pas sémantiquement les pages d'annexes diluées dans du texte
-long. BM25 attrape les mots-clés exacts comme « coût moyen
-pondéré » ou « 900 000 tonnes » que l'embedding lisse.
+`recall@5=KO`. Côté `valeurs_dans_contexte` :
+- **Q30** (extraction, montant « 32 944 357 ») : `False` — la
+  valeur attendue est absente du top-5.
+- **Q12, Q21, Q25** (toutes `texte_annexes`) : `null` — pas
+  de valeur numérique à chercher, l'indicateur est hors scope.
+
+Dans les 4 cas l'embedding dense peine, soit sur un chiffre
+isolé (Q30), soit sur du texte d'annexe dilué dans du texte long
+(Q12/Q21/Q25). BM25 attrape les mots-clés exacts comme « coût
+moyen pondéré » ou « 900 000 tonnes » que l'embedding lisse.
 
 Filtrage par entreprise observé utile : à k=20 sur Q23, les
 rangs 10 et 11 sont des pages `sfbt_2024` au lieu de
@@ -2532,8 +2536,17 @@ qualité de retrieval des configurations suivantes :
 | **dense** | Baseline V1 déjà enregistrée dans `results/retrieval_top20.jsonl`. |
 | **BM25** | BM25 seul sur les chunks locaux. |
 | **hybride RRF** | Fusion rangs dense + BM25 via Reciprocal Rank Fusion. |
-| **dense + filtre entreprise** | Dense restreint au périmètre de l'entreprise de la Q. |
-| **hybride + filtre entreprise** | Fusion RRF restreinte au périmètre. |
+| **dense + filtre entreprise** | Dense restreint au périmètre de l'entreprise de la Q **AVANT** la construction du top-50. |
+| **hybride + filtre entreprise** | Fusion RRF sur dense-filtré + BM25-filtré (filtre appliqué AVANT la construction des 2 listes top-50). |
+
+**Règle de filtrage (identique pour les 2 configs filtrées) :**
+le filtre entreprise selon §1 réduit le périmètre des chunks
+candidats *avant* le calcul des scores dense et BM25. Pour une
+question à entreprise unique, on cherche dans les chunks du
+seul document correspondant ; pour « Monoprix » ambigu, dans
+les chunks des deux documents (individuel + consolidé). Ainsi
+les listes top-50 dense et BM25 ne contiennent jamais de chunks
+hors périmètre, et la fusion RRF n'a pas à les repêcher.
 
 **Métriques pour chaque configuration :**
 
@@ -2555,13 +2568,29 @@ et versionnés dans `bilanlens/bm25.py` / `retrieval_hybride.py` :
 - **Tokenisation française.**
   - Minuscules.
   - Accents retirés (NFKD + suppression des marks).
-  - Nombres gardés **tels quels** (pas de normalisation
-    `100 836 224` → `100836224`), parce que BM25 doit matcher
-    les montants écrits à l'identique dans le PDF.
-  - Stop words **désactivés**. Le corpus est financier et
-    court ; retirer « de », « et », « à » risque de casser des
-    expressions comme « Résultat net de l'exercice ». Plutôt
-    laisser BM25 pondérer via IDF.
+  - **Regroupement des nombres séparés par des espaces** en un
+    seul token, **dans les chunks ET dans les questions** (même
+    règle des deux côtés, sinon le match échoue). Exemples :
+    - `100 836 224` → `100836224`
+    - `1 281 772 854,965` → `1281772854,965`
+    - `268.125.000` → `268125000` (points de milliers aussi
+      compressés)
+    - `l'exercice` → `l`, `exercice` (découpe aux apostrophes
+      typographiques U+2019 et droites U+0027)
+  - **Séparation aux apostrophes** : « l'exercice » → 2 tokens
+    `l` + `exercice`, « d'actions » → `d` + `actions`.
+  - **Pas de stemming.** On garde les formes telles quelles.
+    Les variantes `provision` / `provisions` resteront 2 tokens
+    distincts ; l'IDF compensera.
+  - **Stop words conservés (baseline).** Les mots fréquents
+    (« de », « et », « à », « la ») restent dans l'index. Le
+    choix est baseline par simplicité et pour que l'IDF du
+    corpus financier fasse le travail — et non parce qu'on
+    veut « préserver des expressions ». Si la mesure montre
+    qu'un stop-list classique améliore Recall@5, V2.1 pourra
+    la tester explicitement.
+  - **Ordre stable** (voir aussi plus bas) : la tokenisation
+    est déterministe, pas de hash dependent-du-process.
 - **BM25 — paramètres.**
   - `k1 = 1.5` (valeur standard rank_bm25).
   - `b = 0.75` (valeur standard rank_bm25).
@@ -2577,17 +2606,34 @@ et versionnés dans `bilanlens/bm25.py` / `retrieval_hybride.py` :
     littérature TREC).
   - Score d'un chunk : `Σ_i 1 / (k + rang_i)` sur les listes
     où il apparaît.
+- **Ordre stable des résultats (reproducibilité).** À chaque
+  étape où deux chunks ont le même score (BM25, dense, RRF),
+  la clé de tri secondaire est **le `chunk_id` par ordre
+  alphanumérique croissant** (ex. `ciments_bizerte_2024_p2_s0`
+  avant `ciments_bizerte_2024_p3_s0`). Cette règle est
+  appliquée dans les 3 modules (BM25, dense, RRF) et doit
+  faire l'objet d'un test unitaire (deux chunks à score
+  identique → ordre `chunk_id` croissant).
 - **Version épinglée :** `rank_bm25 == 0.2.2` (dernière stable
   au 2026-11-06 ; à ajouter dans `requirements.txt`).
+
+**Test de tokenisation (à écrire avec le module) :** vérifier
+que `tokeniser("Revenus 100 836 224 TND de l'exercice 2024")`
+produit une liste qui contient `100836224` (regroupé),
+`revenus`, `tnd`, `de`, `l`, `exercice` (découpé à
+l'apostrophe) et `2024`. Idem avec `1 281 772 854,965` →
+`1281772854,965` et `268.125.000` → `268125000`.
 
 ### §4. Critère de choix de configuration (écrit AVANT de voir les résultats)
 
 **La configuration retenue pour la V2 sera celle qui maximise
 `Recall@5` sur les 27 Q avec page attendue, à égalité départagée
-par `MRR` plus élevé.** Un seuil minimum est imposé :
-`Recall@5 ≥ Recall@5 V1 = 19/27 (70 %)`. Si aucune configuration
-n'atteint ce seuil, la V2 n'est pas lancée (le dense V1 reste
-meilleur et V2 serait une régression).
+par `MRR` plus élevé.** Seuil impératif : `Recall@5 > 19/27`
+(strictement supérieur au dense V1). **Si aucune configuration
+ne dépasse 19/27, on garde le dense V1 et on ne lance PAS de
+run LLM V2.** Une égalité à 19/27 est un match nul : pas assez
+pour justifier le coût d'implémentation et l'ajout de
+complexité, donc la V2 n'est pas lancée.
 
 **Sous-contraintes de garde-fou :**
 
@@ -2658,37 +2704,62 @@ avec :
 
 ### §8. Validation externe nécessaire
 
-**Le réglage final de V2 (hyperparamètres BM25/RRF, table de
-synonymes entreprise, critère §4) sera lui-même un fit sur les
-31 Q.** Ce réglage devra être validé sur un benchmark neuf :
+Le risque de **réglage sur le benchmark** porte sur trois
+leviers, à distinguer :
+
+1. **Règles du filtre entreprise (§1)** : la table de
+   synonymes (« SOTUVER », « SNMVT », « SFBT », « Délice »,
+   « Ciments de Bizerte », règles de désambiguation Monoprix)
+   est construite à la main sur les 31 Q. **Fit benchmark.**
+2. **Configuration retrieval retenue (§4)** : parmi les 5 Confs
+   testées, on choisit celle qui maximise Recall@5 sur les
+   27 Q. **Fit benchmark.**
+3. **Prompt V1.2** : règles R1 (« total passif = total du
+   bilan ») et R2 (« indique le sens ») issues de l'analyse
+   post-hoc des erreurs V1.1. **Déjà fit benchmark**, déjà
+   signalé dans l'entrée V1.2.
+
+**En revanche, les hyperparamètres BM25/RRF (§3) sont fixés
+avant la mesure** et ne sont pas un point de fit : `k1=1.5`,
+`b=0.75`, `k_RRF=60`, listes top-50, tokenisation déterministe.
+Ils sont pris aux valeurs standard de la littérature,
+documentés tels dans `requirements.txt` + modules.
+
+**Le réglage final V2 devra être validé sur un benchmark neuf :**
 
 - Nouvelles autonomies financières (≥ 5 Q, autres entreprises /
-  exercices).
+  exercices) pour tester le prompt V1.2 et son règlage « total
+  passif ».
 - Nouvelles questions `texte_annexes` sur méthodes comptables
-  rares.
+  rares pour tester si le gain BM25 généralise.
 - Nouvelles Q `sans_reponse` dont l'entreprise n'est pas nommée
-  pour tester le cas « pas de filtre ».
+  pour tester le cas « pas de filtre » (non couvert par le
+  benchmark actuel).
 
 Sans cette validation, les chiffres V2 racontent uniquement ce
 qui marche sur ce benchmark particulier, pas une amélioration
 généralisable.
 
-### §9. Risques listés (inchangé mais complété)
+### §9. Risques listés
 
 - **Ambigüité Monoprix** : le filtre garde les deux docs quand
   la question dit « Monoprix » sans qualifier. Peut diluer la
   sélection pour Q13 (« SNMVT-Monoprix » individuel) si le
   filtre n'extrait pas « SNMVT ». À tester explicitement.
-- **Q sans_reponse Q26, Q31** : à vérifier qu'elles nomment bien
-  leur entreprise. Si non, « pas de filtre » s'applique → V2
-  cherche dans tout le corpus pour ces Q.
-- **BM25 et chiffres** : un montant comme « 100 836 224 » est
-  tokenisé en 3 tokens (« 100 », « 836 », « 224 »). BM25 va
-  trouver les pages qui contiennent ces 3 nombres, mais aussi
-  d'autres pages qui partagent « 100 » ou « 224 » isolément.
-  À surveiller dans les rangs des Q extraction.
+- **BM25 et chiffres : atténué par la règle §3.** La
+  tokenisation regroupe les nombres séparés par espaces en un
+  seul token (`100 836 224` → `100836224`), appliquée aux
+  chunks ET aux questions. Un montant devient donc un token
+  unique avec un IDF très élevé (il n'apparaît que sur une ou
+  deux pages du corpus). Le risque résiduel est les montants
+  dont les séparateurs varient entre chunks (`1 281 772 854,965`
+  vs `1281772854.965`) — à surveiller à l'inspection des rangs.
 - **RRF k = 60** : canonique, mais peu interprétable sur des
   listes de 50. Vérifier que les scores ne s'écrasent pas.
+- **Ties côté tokenisation** : deux chunks aux scores égaux
+  pourraient apparaître dans un ordre non reproductible. Mitigé
+  par la règle d'ordre stable §3 (tie-break = `chunk_id`
+  alphanumérique croissant).
 
 ### §10. Décisions figées pour V2
 
