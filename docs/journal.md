@@ -3256,7 +3256,12 @@ Recall@k et MRR (retrieval V2.1/hybride_filtre) :
 | MRR | 0.543 | **0.714** |
 
 `valeurs_dans_contexte` (True/False/None) : V1.2 = 21/1/9 ;
-V2 = 21/1/9 (identique).
+V2 = 21/1/9. **Les totaux agrégés sont identiques par
+coïncidence**, pas parce que le contenu des top-5 serait
+inchangé : Q13 passe True → False (la page 5 attendue sort du
+top-5) et Q30 passe False → True (la page 32 attendue entre
+dans le top-5). Les deux migrations se compensent exactement.
+Vérifier le vdc Q par Q et non à l'agrégat.
 
 ### Justes parmi les réponses données
 
@@ -3273,7 +3278,7 @@ V2 = 21/1/9 (identique).
 | qid | cat | V1.2 | V2 | Interprétation |
 |---|---|---|---|---|
 | sotuver_2024_06 | calcul | abstention_a_tort_recall_**ok** | **juste** | Prompt V1.2 inchangé, retrieval V2.1 pousse la bonne page → sortie « 1,90 » (ratio = 190 %). |
-| monoprix_consolide_2024_12 | texte_annexes | abstention_a_tort_recall_ko | abstention_a_tort_recall_**ok** | Retrieval amélioré (page 13 passe de rang 6 à rang 1), mais LLM abstient toujours malgré que la réponse soit INTÉGRALEMENT dans le chunk rang 1. **Le prompt V1.2 figé est le verrou, pas le retrieval.** |
+| monoprix_consolide_2024_12 | texte_annexes | abstention_a_tort_recall_ko | abstention_a_tort_recall_**ok** | Retrieval amélioré (page 13 passe de rang 6 à rang 1), mais LLM abstient toujours malgré que la réponse soit INTÉGRALEMENT dans le chunk rang 1. **La cause de l'abstention reste inconnue**. *Hypothèse à tester* : le prompt V1.2 est très conservateur sur les questions en « quelles X et pour quelle raison ? » quand le texte source est long et narratif ; il refuse peut-être par prudence quand la réponse n'est pas une valeur isolée. Nécessite une mesure dédiée (variante prompt, même retrieval). |
 | monoprix_2024_13 | extraction | juste | **fausse_recall_ko** | Perte prévue par le benchmark. V2.1 hybride_filtre descend la page 5 hors top-5 ; le LLM lit « Revenus et autres » page 8 (746 256 912 = total produits d'exploitation). Ne pas corriger. |
 | ciments_bizerte_2024_25 | texte_annexes | abstention_a_tort_recall_ko | **juste** | BM25 filtré V2.1 remonte la page 14 au rang 1 → V2 sort « 900 000 tonnes par an ». Validé juste/complete=true. |
 | delice_holding_2024_30 | extraction | abstention_a_tort_recall_ko | **juste** | V2.1 remonte la page attendue dans le top-5 (rang 4) → V2 sort le bon montant « 32 944 357 dinars ». |
@@ -3328,16 +3333,28 @@ INTERNATIONAL et UNITED DECS, raison = fermeture magasins Libye
 - **V2 LLM : « donnée non disponible ».** Le modèle refuse
   malgré que toute la matière soit dans le contexte.
 
-C'est la preuve que **V2.1 corrige le retrieval mais pas le
-prompt**. Q12 passe de `abstention_a_tort_recall_ko` (V1.2 : page
-non récupérée) à `abstention_a_tort_recall_ok` (V2 : page
-récupérée, modèle abstient). Le verrou restant est le prompt
-V1.2 figé : il est très conservateur sur les questions texte en
-« quelles X et pour quelle raison ? » quand le texte source est
-long et narratif.
+Q12 passe de `abstention_a_tort_recall_ko` (V1.2 : page non
+récupérée) à `abstention_a_tort_recall_ok` (V2 : page récupérée,
+modèle abstient). V2.1 corrige donc le retrieval. En revanche,
+**la cause de l'abstention LLM reste inconnue** : plusieurs
+hypothèses non arbitrées faute de mesure dédiée.
 
-Un futur prompt V1.3 pourrait cibler ce pattern. Hors scope de
-V2 (prompt verrouillé par décision).
+*Hypothèses candidates à tester ultérieurement (non tranchées) :*
+
+1. Le prompt V1.2 est conservateur sur les questions texte en
+   « quelles X et pour quelle raison ? » quand la réponse n'est
+   pas une valeur isolée.
+2. Le libellé « donnée non disponible » est privilégié quand
+   une partie seulement de la question peut être répondue
+   (liste de filiales *et* motif).
+3. Un autre facteur contextuel (longueur du chunk,
+   positionnement du chiffre vs du texte narratif,
+   interférence avec d'autres chunks du top-5) joue.
+
+Le même pattern s'observe pour **Q14** (calcul, valeurs dans le
+contexte, abstention) et **Q23** (calcul, valeurs dans le
+contexte via pages alternatives, abstention) : cause inconnue,
+hypothèse à tester. Pas de correction V2.
 
 ### Annotations manuelles ajoutées à `annotations_texte.jsonl`
 
@@ -3359,16 +3376,24 @@ Trois annotations versionnées sous le run_id
   abstention sur chaque catégorie d'erreur attendue.** Q06
   (calcul), Q25 (texte_annexes), Q30 (extraction) passent
   toutes en juste. +2 justes nettes, +3 bons résultats bruts.
-- **Q13 est la régression prévue et assumée** par le critère
-  §4 (meilleur Recall@5 global accepte des pertes locales).
-  Elle sort juste → fausse, ce qui pousse les « justes parmi
-  réponses données » de 100 % à 95,7 %. Trade-off documenté
-  ex ante.
-- **Q12 est l'illustration parfaite du verrou prompt.** Toutes
+- **Q13 : régression repérée APRÈS le benchmark retrieval,
+  AVANT le run LLM.** Le critère §4 (R@5 strict > 19/27) ne
+  portait **que sur le Recall@5 global** ; il ne traitait pas
+  explicitement du trade-off au niveau des réponses LLM. En
+  inspectant les gains/pertes R@5 par Q (étape de rapport, pas
+  étape de décision), la perte de Q13 côté hybride_filtre
+  V2.1 était visible : juste au Q13 côté dense, perdue côté
+  hybride_filtre. La décision de lancer quand même le run LLM
+  a été prise sachant cela — pas un trade-off *écrit ex ante
+  dans §4*, mais un trade-off *connu avant le run*. En V2
+  LLM, Q13 passe juste → fausse, et les « justes parmi
+  réponses données » tombent de 100 % à 95,7 %.
+- **Q12 : la cause de l'abstention LLM reste inconnue.** Toutes
   les conditions retrieval sont réunies (page attendue au
   rang 1, texte complet dans le contexte) et le modèle refuse
-  quand même. C'est le prompt V1.2 qui bloque, pas le pipeline
-  V2. Un plan V3 devrait inclure un prompt revu pour ce pattern.
+  quand même. **Hypothèse** : le prompt V1.2 bloque sur ce
+  pattern. Non vérifié dans ce run. Un éventuel V1.3 devrait
+  inclure une mesure prompt dédiée AVANT toute modification.
 - **Aucune invention sur les 4 sans_reponse.** Le filtre
   entreprise + hybride_filtre + V2.1 n'a fait qu'améliorer le
   retrieval ; la sortie du modèle reste protégée par la
@@ -3377,6 +3402,45 @@ Trois annotations versionnées sous le run_id
 - **Décision V2 close.** Le pipeline retenu (`v2.1 /
   hybride_filtre`) améliore effectivement V1.2 au prix d'une
   régression unique et traçable. Pas d'autre run V2.
+
+### Tableau final : B0-strict, B0-libre, V1, V1.1, V1.2, V2
+
+Synthèse chiffrée des 6 runs réalisés sur le benchmark (31 Q,
+27 avec page attendue), modèle Flash-Lite, temperature 0.
+
+| Run | Bons résultats | Justes | Fausses | Justes / réponses données | Recall@5 | MRR |
+|---|---|---|---|---|---|---|
+| B0-strict | **4/31** | 0 | 0 | 0/0 n/a | n/a | n/a |
+| B0-libre  | **5/31** | 1 | 6 | 1/7 (14,3 %) | n/a | n/a |
+| V1        | **20/31** | 16 | 1 | 16/17 (94,1 %) | 19/27 (70 %) | 0,543 |
+| V1.1      | **22/31** | 18 | 4 | 18/22 (81,8 %) | 19/27 (70 %) | 0,543 |
+| V1.2      | **24/31** | 20 | 0 | 20/20 (100 %) | 19/27 (70 %) | 0,543 |
+| **V2**    | **26/31** | **22** | **1** | **22/23 (95,7 %)** | **22/27 (81 %)** | **0,714** |
+
+Lectures clés :
+
+- **Bons résultats** (juste + abstention_correcte) monotonement
+  croissants : 4 → 5 → 20 → 22 → 24 → 26.
+- **B0-strict vs V1** est la seule paire à prompt système
+  identique (seul le template user change), donc la seule qui
+  **mesure l'effet pur du RAG** : +16 bons résultats.
+- **V1 → V1.1 → V1.2** : effet pur du prompt (retrieval
+  identique, mêmes chunks). V1.1 fait +2 bons résultats mais
+  payés par +4 fausses (consigne de calcul libère des réponses
+  parfois sémantiquement fausses, cf. Q02/Q10/Q19 erreur de
+  définition « total passif »). V1.2 corrige ces fausses avec
+  R1 (« total passif = total du bilan »), ramène les fausses
+  à 0 et pousse « justes parmi réponses données » à 100 %.
+- **V1.2 → V2** : effet du retrieval (prompt V1.2 inchangé
+  byte-à-byte). +2 bons résultats, Recall@5 + 3 Q (19 → 22),
+  MRR +0,17. Payé par 1 régression Q13 (juste → fausse) ; la
+  précision retombe à 95,7 % mais reste bien au-dessus de V1
+  (94,1 %) et V1.1 (81,8 %).
+- **Les colonnes Recall@5 / MRR sont identiques V1, V1.1, V1.2**
+  parce que ces 3 runs partagent exactement le retrieval dense
+  V1. Seule la consigne du prompt change. V2 est la première
+  version qui change le retrieval (hybride_filtre V2.1), d'où
+  le saut aux 2 dernières colonnes.
 
 ### Fichiers créés / modifiés
 
