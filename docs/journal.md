@@ -3092,6 +3092,22 @@ Notable V2.1 vs V2 :
 **Config retenue : `v2.1 / hybride_filtre`** (R@5 = 22/27,
 MRR = 0.7136).
 
+**Résumé de la décision en trois points traçables :**
+
+1. **+4 / −1 vs dense au Recall@5.** Gains sur Q07, Q12, Q25,
+   Q30. Perte sur Q13 (SNMVT-Monoprix extraction qui passe
+   hors top-5 à cause du mélange BM25). Net = +3.
+2. **Configuration choisie parmi 10 configurations** (5 configs
+   × 2 variantes de tokenisation V2 / V2.1). Les 5 configs V2
+   restaient toutes soit sous 20/27 soit à 20/27 exactement ;
+   seule V2.1 (post-hoc) dépasse strictement 19/27.
+3. **L'IDF BM25 est recalculée sur le périmètre filtré.** Pour
+   chaque question, un nouvel `IndexBM25` est construit sur le
+   sous-ensemble de chunks de l'entreprise désambiguée par
+   `bilanlens.filtre_question` (pas de filtration *a posteriori*
+   de l'index global). C'est bien un index spécifique à
+   l'entreprise, pas une restriction de rangs.
+
 Impact sur les 4 Q `problemes_recherche` V1 :
 
 | qid | rangs top-5 ? |

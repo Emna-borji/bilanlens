@@ -1345,6 +1345,220 @@ def mode_v1_2(questions: list[dict]) -> int:
     return 0
 
 
+# Constantes V2 : run V2 (results/v2.jsonl) + top-20 retrieval V2.1
+V2_PATH = RACINE / "results" / "v2.jsonl"
+SCORES_V2_PATH = RACINE / "results" / "scores_v2.jsonl"
+RETRIEVAL_COMPARE_PATH = RACINE / "results" / "retrieval_compare.jsonl"
+V2_CONFIG_ID = "v2_1_hybride_filtre"
+
+
+def _charger_top20_v2(
+    retrieval_compare_path: Path = RETRIEVAL_COMPARE_PATH,
+) -> dict[str, list[dict]]:
+    """Lit results/retrieval_compare.jsonl et renvoie le top-20
+    par question pour la variante `v2.1` et la config
+    `hybride_filtre` (celle retenue par §4). Format identique
+    au retrieved_top20 utilisé par scorer_question.
+    """
+    out: dict[str, list[dict]] = {}
+    with retrieval_compare_path.open(encoding="utf-8") as src:
+        for ligne in src:
+            ligne = ligne.strip()
+            if not ligne:
+                continue
+            r = json.loads(ligne)
+            if r.get("variante") != "v2.1":
+                continue
+            if r.get("config") != "hybride_filtre":
+                continue
+            out[r["question_id"]] = r["retrieved_top20"]
+    return out
+
+
+def mode_v2(questions: list[dict]) -> int:
+    """Score le run V2 (results/v2.jsonl) et compare V1.2 vs V2
+    selon les règles du plan V2 §5. Zéro appel Chroma, zéro LLM.
+
+    Reconstruit le contexte V2 top-5 depuis `data/chunks/*.jsonl`
+    pour calculer `valeurs_dans_contexte`. Utilise
+    `results/retrieval_compare.jsonl` pour le top-20 retrieval
+    V2 (variante v2.1, config hybride_filtre) qui alimente
+    recall@k et MRR.
+    """
+    lignes_v1_2 = charger_jsonl(V1_2_PATH)
+    if not lignes_v1_2:
+        print(f"ERREUR : {V1_2_PATH} vide ou absent.")
+        return 1
+    run_id_v1_2 = lignes_v1_2[-1]["run_id"]
+    v1_2 = {l["question_id"]: l for l in lignes_v1_2
+            if l.get("run_id") == run_id_v1_2}
+
+    lignes_v2 = charger_jsonl(V2_PATH)
+    if not lignes_v2:
+        print(f"ERREUR : {V2_PATH} vide ou absent.")
+        return 1
+    run_id_v2 = lignes_v2[-1]["run_id"]
+    v2 = {l["question_id"]: l for l in lignes_v2
+          if l.get("run_id") == run_id_v2}
+
+    print(f"V1.2 : {len(v1_2)}/31 reponses  (run {run_id_v1_2})")
+    print(f"V2   : {len(v2)}/31 reponses  (run {run_id_v2})")
+
+    top20_v2 = _charger_top20_v2()
+    print(f"Top-20 V2.1/hybride_filtre charge : {len(top20_v2)} questions")
+
+    # Top-20 V1 (pour scorer V1.2) : garder le même pipeline que
+    # mode_v1_2, via retrieval_top20.jsonl (V1 retrieval).
+    top20_v1, textes_top20_v1 = _charger_retrieval_top20()
+    print(f"Top-20 V1 charge (pour V1.2 scoring) : {len(top20_v1)} questions")
+
+    chunks_locaux = charger_chunks_locaux()
+
+    ann_v1_2 = charger_annotations(run_id=run_id_v1_2)
+    ann_v2 = charger_annotations(run_id=run_id_v2)
+    print(f"Annotations V1.2 : {len(ann_v1_2)}")
+    print(f"Annotations V2   : {len(ann_v2)}")
+
+    scores_v1_2: list[dict] = []
+    scores_v2: list[dict] = []
+    for q in questions:
+        qid = q["id"]
+        if qid in v1_2:
+            rec_v1_2 = v1_2[qid]
+            textes_top20_q = textes_top20_v1.get(qid, [])
+            textes_v1 = [
+                textes_top20_q[int(r.get("rank", 1)) - 1]
+                for r in rec_v1_2.get("retrieved", [])
+                if 1 <= int(r.get("rank", 1)) <= len(textes_top20_q)
+            ]
+            scores_v1_2.append(
+                scorer_question(q, rec_v1_2, top20_v1.get(qid, []),
+                                 textes_v1, ann_v1_2,
+                                 run_id=run_id_v1_2)
+            )
+        if qid in v2:
+            rec_v2 = v2[qid]
+            textes_v2 = [
+                chunks_locaux.get(r["chunk_id"], "")
+                for r in sorted(
+                    rec_v2.get("retrieved", []),
+                    key=lambda r: int(r.get("rank", 0)),
+                )
+            ]
+            scores_v2.append(
+                scorer_question(q, rec_v2, top20_v2.get(qid, []),
+                                 textes_v2, ann_v2,
+                                 run_id=run_id_v2)
+            )
+
+    with SCORES_V2_PATH.open("w", encoding="utf-8") as f:
+        for s in scores_v2:
+            f.write(json.dumps(s, ensure_ascii=False) + "\n")
+    print(f"Ecrit : {SCORES_V2_PATH.relative_to(RACINE)}")
+
+    print()
+    print("=== Stats V1.2 (ref) ===")
+    afficher_stats(scores_v1_2)
+    print()
+    print("=== Stats V2 ===")
+    afficher_stats(scores_v2)
+
+    # Justes parmi réponses données
+    print()
+    print("=== Justes parmi les reponses donnees (hors abstention) ===")
+    for lab, scores in [("V1.2", scores_v1_2), ("V2", scores_v2)]:
+        donnees = [
+            s for s in scores
+            if s["classe"] not in ("abstention_a_tort_recall_ok",
+                                     "abstention_a_tort_recall_ko",
+                                     "abstention_correcte")
+        ]
+        justes = [s for s in donnees if s["classe"] == "juste"]
+        print(f"  {lab} : {len(justes)}/{len(donnees)} reponses donnees "
+              f"sont justes")
+
+    # valeurs_dans_contexte
+    print()
+    print("=== valeurs_dans_contexte (True / False / None) ===")
+    for lab, scores in [("V1.2", scores_v1_2), ("V2", scores_v2)]:
+        vdc_true = sum(1 for s in scores if s.get("valeurs_dans_contexte") is True)
+        vdc_false = sum(1 for s in scores if s.get("valeurs_dans_contexte") is False)
+        vdc_none = sum(1 for s in scores if s.get("valeurs_dans_contexte") is None)
+        print(f"  {lab} : True={vdc_true}  False={vdc_false}  None={vdc_none}")
+
+    # Changements de classe Q par Q
+    print()
+    print("=== Changements de classe V1.2 -> V2 ===")
+    i_v1_2 = {s["question_id"]: s for s in scores_v1_2}
+    i_v2 = {s["question_id"]: s for s in scores_v2}
+    changes = []
+    for qid in sorted(i_v1_2):
+        if qid not in i_v2:
+            continue
+        if i_v1_2[qid]["classe"] != i_v2[qid]["classe"]:
+            changes.append(
+                (qid, i_v1_2[qid]["category"],
+                 i_v1_2[qid]["classe"], i_v2[qid]["classe"])
+            )
+    if changes:
+        print(f"  {'qid':<32}  {'cat':<16}  {'V1.2':<32}  V2")
+        for qid, cat, c1, c2 in changes:
+            print(f"  {qid:<32}  {cat:<16}  {c1:<32}  {c2}")
+    else:
+        print("  (aucun changement)")
+
+    # Focus 8 Q demandées
+    print()
+    print("=== Focus : Q06, Q12, Q13, Q14, Q21, Q23, Q25, Q30 ===")
+    cibles = [
+        "sotuver_2024_06",
+        "monoprix_consolide_2024_12",
+        "monoprix_2024_13",
+        "monoprix_2024_14",
+        "sfbt_2024_21",
+        "ciments_bizerte_2024_23",
+        "ciments_bizerte_2024_25",
+        "delice_holding_2024_30",
+    ]
+    for qid in cibles:
+        if qid in i_v1_2 and qid in i_v2:
+            print(f"  {qid:<32}  V1.2={i_v1_2[qid]['classe']:<32}  "
+                  f"V2={i_v2[qid]['classe']}")
+            print(f"    V1.2 : {i_v1_2[qid]['reponse_modele'][:80]}")
+            print(f"    V2   : {i_v2[qid]['reponse_modele'][:80]}")
+            vdc_v1_2 = i_v1_2[qid].get("valeurs_dans_contexte")
+            vdc_v2 = i_v2[qid].get("valeurs_dans_contexte")
+            print(f"    vdc  : V1.2={vdc_v1_2}  V2={vdc_v2}")
+
+    # 4 sans_reponse
+    print()
+    print("=== 4 sans_reponse : V1.2 vs V2 (controle anti-invention) ===")
+    for qid in sorted(i_v1_2):
+        if i_v1_2[qid]["category"] == "sans_reponse" and qid in i_v2:
+            print(f"  {qid:<32}  V1.2={i_v1_2[qid]['classe']:<24}  "
+                  f"V2={i_v2[qid]['classe']}")
+
+    # Nouvelles fausses en V2
+    print()
+    print("=== Nouvelles reponses fausses en V2 ===")
+    nouvelles_fausses = [
+        qid for qid in sorted(i_v1_2)
+        if qid in i_v2
+        and i_v2[qid]["classe"] in (
+            "fausse_recall_ok", "fausse_recall_ko", "reponse_a_tort",
+        )
+        and i_v1_2[qid]["classe"] != i_v2[qid]["classe"]
+    ]
+    if nouvelles_fausses:
+        for qid in nouvelles_fausses:
+            print(f"  {qid:<32}  V1.2={i_v1_2[qid]['classe']}  "
+                  f"-> V2={i_v2[qid]['classe']}")
+    else:
+        print("  (aucune)")
+
+    return 0
+
+
 def mode_rebuild_context(questions: list[dict], question_id: str | None = None) -> int:
     """Reconstruit le contexte V1 depuis `results/v1.jsonl` +
     `data/chunks/*.jsonl` sans appeler Chroma ni l'API
@@ -1540,13 +1754,16 @@ def mode_compare(questions: list[dict]) -> int:
 def main() -> int:
     parseur = argparse.ArgumentParser(description="Score du run V1.")
     parseur.add_argument(
-        "--mode", choices=["v1", "compare", "rebuild-context", "v1-1", "v1-2"],
+        "--mode",
+        choices=["v1", "compare", "rebuild-context", "v1-1", "v1-2", "v2"],
         default="v1",
         help="'v1' : score le dernier run V1 (default). 'compare' : "
              "compare B0-strict / B0-libre / V1 (etape 8). "
              "'rebuild-context' : reconstruit le contexte V1 depuis "
              "results/v1.jsonl + data/chunks/, sans Chroma ni API "
-             "embeddings (preparation V2 avec consigne modifiee)."
+             "embeddings (preparation V2 avec consigne modifiee). "
+             "'v2' : score le run V2 (results/v2.jsonl) et compare "
+             "V1.2 vs V2 selon les regles du plan V2 §5."
     )
     parseur.add_argument(
         "--run-id", default=None,
@@ -1572,6 +1789,8 @@ def main() -> int:
         return mode_v1_1(questions)
     if args.mode == "v1-2":
         return mode_v1_2(questions)
+    if args.mode == "v2":
+        return mode_v2(questions)
 
     lignes_v1 = charger_jsonl(V1_PATH)
     if not lignes_v1:

@@ -1,7 +1,24 @@
-"""Benchmark retrieval V2 : 5 configurations SANS appel LLM.
+"""Benchmark retrieval V2 + V2.1 : 10 configurations SANS appel LLM.
 
 Compare `dense`, `bm25`, `hybride_rrf`, `dense_filtre`,
-`hybride_filtre` sur les 31 questions du benchmark.
+`hybride_filtre` sur les 31 questions du benchmark, pour DEUX
+variantes de tokenisation :
+- V2 : stop words conservés (choix baseline du plan V2 §3).
+- V2.1 : stop words français NLTK filtrés (post-hoc ; décidé
+  APRÈS mesure V2 car le plancher IDF de rank_bm25 ≈ 1,15 fait
+  contribuer les mots fréquents au score).
+
+Soit **10 configurations** au total, départagées par le critère
+§4 (R@5 strictement > 19/27, MRR en tie-break).
+
+**Configuration retenue** : `v2.1 / hybride_filtre` (R@5 = 22/27,
+MRR = 0.7136). Gains vs dense au R@5 : **+4 / −1** — gains sur
+Q07, Q12, Q25, Q30 ; perte sur Q13. Dans les 2 configs
+« _filtre », l'**IDF BM25 est recalculée sur le périmètre filtré**
+par entreprise (un nouvel `IndexBM25` est construit à chaque
+question sur le sous-ensemble filtré par
+``bilanlens.filtre_question``, pas une filtration *a posteriori*
+de l'index global).
 
 Pipeline figé (plan V2 §2 et §3) :
 - Embeddings chunks + questions lus depuis le cache local

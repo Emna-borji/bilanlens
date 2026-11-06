@@ -28,6 +28,17 @@ V2 + filtre d'une liste publique de stop words français (cf.
 `STOP_WORDS_FR` et `tokeniser_v2_1`). Exposée en tant que
 tokeniseur alternatif, à passer à `IndexBM25(..., tokenizer=...)`.
 
+**Configuration retenue V2 (plan V2 §4, benchmark 2026-11-06)** :
+`v2.1 / hybride_filtre`. Choisie **parmi 10 configurations**
+(5 configs × 2 variantes de tokenisation V2 / V2.1), après
+l'ajout POST-HOC du filtre stop words. Gains au Recall@5 vs
+dense : **+4 / −1**, soit **gains sur Q07, Q12, Q25, Q30** et
+**perte sur Q13**. Dans ce régime filtré, l'**IDF BM25 est
+recalculée sur le périmètre filtré** par entreprise (un nouvel
+`IndexBM25` est construit à chaque question sur le sous-ensemble
+de chunks correspondant à l'entreprise désambiguée par
+``bilanlens.filtre_question``).
+
 Pré-condition : rank_bm25 == 0.2.2.
 """
 from __future__ import annotations

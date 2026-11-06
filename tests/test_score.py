@@ -725,3 +725,78 @@ def test_scorer_question_sans_reponse_abstention_correcte():
     # Recall @k : None pour sans_reponse.
     assert score["recall"]["recall_at_5"] is None
     assert score["valeurs_dans_contexte"] is None
+
+
+# ------------------------------------------------------------------
+# V2 — _charger_top20_v2 et mode_v2 (sans réseau, sans LLM)
+# ------------------------------------------------------------------
+
+def test_charger_top20_v2_filtre_variante_et_config(tmp_path):
+    """Lit retrieval_compare.jsonl et extrait UNIQUEMENT les lignes
+    variante=v2.1 ET config=hybride_filtre pour la config retenue §4."""
+    from scripts.score import _charger_top20_v2
+
+    cmp_path = tmp_path / "retrieval_compare.jsonl"
+    with cmp_path.open("w", encoding="utf-8") as dst:
+        # Ligne à garder : v2.1 + hybride_filtre
+        dst.write(json.dumps({
+            "variante": "v2.1", "config": "hybride_filtre",
+            "question_id": "q1",
+            "retrieved_top20": [
+                {"rank": 1, "chunk_id": "a_p1_s0", "doc": "a",
+                 "page_physique": 1, "sous_numero": 0},
+            ],
+        }) + "\n")
+        # Ligne à exclure : v2.1 + dense
+        dst.write(json.dumps({
+            "variante": "v2.1", "config": "dense",
+            "question_id": "q1",
+            "retrieved_top20": [
+                {"rank": 1, "chunk_id": "autre_chunk", "doc": "a",
+                 "page_physique": 9, "sous_numero": 0},
+            ],
+        }) + "\n")
+        # Ligne à exclure : v2 (hybride_filtre mais mauvaise variante)
+        dst.write(json.dumps({
+            "variante": "v2", "config": "hybride_filtre",
+            "question_id": "q1",
+            "retrieved_top20": [
+                {"rank": 1, "chunk_id": "chunk_v2", "doc": "a",
+                 "page_physique": 5, "sous_numero": 0},
+            ],
+        }) + "\n")
+        # Autre question valide
+        dst.write(json.dumps({
+            "variante": "v2.1", "config": "hybride_filtre",
+            "question_id": "q2",
+            "retrieved_top20": [
+                {"rank": 1, "chunk_id": "b_p1_s0", "doc": "b",
+                 "page_physique": 2, "sous_numero": 0},
+            ],
+        }) + "\n")
+    out = _charger_top20_v2(cmp_path)
+    assert set(out.keys()) == {"q1", "q2"}
+    assert out["q1"][0]["chunk_id"] == "a_p1_s0"
+    assert out["q2"][0]["chunk_id"] == "b_p1_s0"
+
+
+def test_charger_top20_v2_ignore_lignes_vides(tmp_path):
+    from scripts.score import _charger_top20_v2
+
+    cmp_path = tmp_path / "rc.jsonl"
+    with cmp_path.open("w", encoding="utf-8") as dst:
+        dst.write("\n")
+        dst.write(json.dumps({
+            "variante": "v2.1", "config": "hybride_filtre",
+            "question_id": "q1",
+            "retrieved_top20": [],
+        }) + "\n")
+        dst.write("   \n")
+    out = _charger_top20_v2(cmp_path)
+    assert out == {"q1": []}
+
+
+def test_v2_config_id_fige():
+    """Garde-fou : la config V2 retenue doit rester v2_1_hybride_filtre."""
+    from scripts.score import V2_CONFIG_ID
+    assert V2_CONFIG_ID == "v2_1_hybride_filtre"
