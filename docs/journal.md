@@ -4171,3 +4171,209 @@ Avant tout run LLM V3, produire pour les 31 Q :
   en place.
 
 
+
+---
+
+## 2026-11-07 (soir) — V3 benchmark reranker (sans LLM) : **V3 NON retenue**
+
+### Résumé
+
+Reranker `BAAI/bge-reranker-v2-m3` (revision épinglée
+`953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e`, licence Apache-2.0)
+appliqué aux 20 candidats V2.1/hybride_filtre des 31 Q. Scoring
+par lots de 2 avec libération mémoire explicite, cache
+incrémental par paire. Zéro appel LLM.
+
+**Décision §4** : R@5 reranker = 21/27 ≤ 22/27 strict →
+**V3 NON retenue**. On garde V2 (v2.1/hybride_filtre). Pas de
+run LLM V3.
+
+### Garde-fou amont (V2.1 recalculée)
+
+- R@5 = **22/27** ✓ (identique à `benchmark_retrieval.py`)
+- MRR = **0.7136** ✓
+→ Pipeline amont intact.
+
+### Longueurs tokenisées (31 Q × 20 cand = 620 paires)
+
+Mesure RÉELLE avec le tokenizer du reranker (pas estimation) :
+
+- Minimum : **104** tokens
+- Médiane : **613** tokens
+- Maximum : **1434** tokens
+- Aucune paire ne dépasse 8192 tokens → **aucune troncation**.
+
+La page BVMT la plus dense (max = 1434) utilise moins de 20 % du
+contexte natif (8192). Confirme l'hypothèse ex ante : un reranker
+à contexte 8192 traite nos pages entières sans compromis. Un
+reranker à 512 tokens aurait tronqué environ 60 % des paires
+(toutes au-dessus de ~450 tokens, soit la médiane 613 et au-delà).
+
+### Résultats retrieval V3 vs V2 (27 Q avec page attendue)
+
+| Métrique | V2 (hybride_filtre V2.1) | V3 (reranker) | Δ |
+|---|---|---|---|
+| Recall@1 | 15/27 | 8/27 | −7 |
+| Recall@3 | 20/27 | 17/27 | −3 |
+| **Recall@5** | **22/27** | **21/27** | **−1** |
+| Recall@10 | 26/27 | 24/27 | −2 |
+| MRR | 0.7136 | 0.5168 | −0.1968 |
+
+**V3 dégrade TOUTES les métriques retrieval mesurées.** Le
+reranker ne reclasse pas mieux que la fusion RRF sur ce corpus
+financier.
+
+### Gains / pertes au R@5 vs V2
+
+- **Gains (3)** :
+  - `ciments_bizerte_2024_23` (ROA calcul, 2 pages attendues)
+  - `monoprix_2024_13` (SNMVT CA individuel) — Q que V2 avait
+    perdue vs dense ; V3 la récupère
+  - `sfbt_2024_21` (méthode valorisation stocks, texte_annexes)
+- **Pertes (4)** :
+  - `delice_holding_2024_27` (dividendes reçus)
+  - `delice_holding_2024_30` (dividendes payés)
+  - `sfbt_2024_18` (revenus SFBT)
+  - `sfbt_2024_19` (autonomie SFBT)
+
+Net : −1. Trois gains (dont texte_annexes Q21 et Q13 = perte
+prévue V2 récupérée) mais quatre pertes sur des extractions
+numériques et calculs simples. Le reranker favorise les chunks
+narratifs sur les tableaux chiffrés — pattern inverse du filtre
+entreprise + BM25 V2.1.
+
+### Rangs des 5 Q d'intérêt
+
+| qid | V2 (rangs) | V3 reranker (rangs) |
+|---|---|---|
+| Q12 monoprix_consolide (texte_annexes) | 1 | **1** (idem) |
+| Q13 monoprix_individuel (extraction) | 10 (hors top-5) | **3** (dans top-5) |
+| Q14 monoprix_individuel (calcul) | 2 | **1** (remontée) |
+| Q21 sfbt (texte_annexes) | 11 (hors top-5) | **3** (dans top-5) |
+| Q23 ciments (calcul, 2 pages) | 9, 1 | **4, 1** (une page remontée) |
+
+Le reranker remonte bien des pages de **texte_annexes / calcul
+multi-page** dans le top-5 (Q13, Q21, Q23). Mais il DÉPLACE
+d'autres pages (Q18, Q19, Q27, Q30) qui étaient dans le top-5
+V2 vers des rangs > 5. Le score reranker, basé sur la
+correspondance sémantique profonde question↔chunk, ne semble
+pas discriminer assez bien entre « chunk qui contient la vraie
+réponse » et « chunk thématiquement proche ».
+
+### Temps et mémoire
+
+- **Chargement modèle** : 24.9 s (CPU, float32).
+- **Reranking 620 paires** : 2 846.6 s = **47,4 min** avec
+  batch_size=2. ≈ **4.6 s / paire** en moyenne sur CPU (Intel
+  moderne, pas de GPU).
+- **RSS pic** : 2 936 MB (~2.9 GB). Bien en-deçà de l'OOM kill
+  du premier essai avec batch=20 (qui n'avait pas été mesuré
+  mais devait culminer autour de 5-7 GB).
+- RSS fin de scoring redescend à 1 818 MB, preuve que la
+  libération `del` + `gc.collect()` entre lots fonctionne : le
+  pic ne vient que des forwards actifs, pas d'accumulation.
+- Estimation vs réalité : plan V3 §1 annonçait 5-15 min CPU
+  « Intel i7 moderne » pour 620 paires. **Réalité : 47 min**
+  (batch=2 force 310 forwards séquentiels plus coûteux que
+  les 31 forwards batch=20 initialement envisagés mais qui
+  OOM-killaient). Estimation plan trop optimiste ; à corriger
+  dans un futur plan.
+
+### Interprétation
+
+Pourquoi le reranker dégrade-t-il la baseline V2.1 ?
+
+Trois hypothèses non testées (il faudrait des expériences
+dédiées pour trancher, hors scope V3 close) :
+
+1. **Entraînement du reranker non spécialisé sur du
+   français financier.** `bge-reranker-v2-m3` est multilingue
+   général (MS-MARCO, NQ, HotpotQA, etc.). Sans fine-tuning sur
+   du domaine BVMT, la pertinence des chunks courts chiffrés
+   (bilans) peut être sous-évaluée par rapport aux chunks
+   narratifs.
+2. **BM25 V2.1 local est déjà très bien calibré.** La
+   tokenisation V2.1 avec regroupement des nombres
+   (`100 836 224` → un seul token à IDF élevée) donne au BM25
+   un avantage spécifique sur les montants. Le reranker, lui,
+   tokenise différemment et perd ce signal.
+3. **La fusion RRF filtre + dense + BM25 est déjà un reranker
+   léger.** V2.1/hybride_filtre fait déjà une forme de
+   reclassement multi-signal. Un cross-encoder « générique »
+   par-dessus ne lit pas forcément mieux.
+
+### Décision §4
+
+Critère écrit AVANT la mesure (plan V3 §4) : **R@5 strictement
+supérieur à 22/27 sur les 31 Q**, MRR en départage.
+
+- V3 reranker R@5 = 21/27 ≤ 22/27.
+- **V3 NON retenue.**
+- **On garde V2** (`v2.1/hybride_filtre`) comme pipeline de
+  production.
+- **Pas de run LLM V3** (§4 pré-conditionne tout run LLM).
+
+Le jeu de validation (15 Q, §6 du plan V3) n'est PAS utilisé :
+il n'a pas vocation à choisir, et sans §4 OK sur 31 Q, pas
+d'évaluation.
+
+### Fichiers créés
+
+- `bilanlens/reranker.py` : wrapper `BAAI/bge-reranker-v2-m3`,
+  revision épinglée, scoring par lots avec libération mémoire
+  (`_scores_par_lots` isolé pour test d'invariance).
+- `tests/test_reranker.py` : 20 tests sans réseau (modèle
+  simulé) incluant `test_classement_final_invariant_sous_batch_size`.
+- `scripts/benchmark_rerank.py` : benchmark 31 Q sans LLM avec
+  garde-fou amont V2.1 = 22/27, cache incrémental par paire
+  (`results/rerank_scores_cache.jsonl`), mesure psutil du RSS
+  pic.
+- `requirements.txt` : ajout `torch==2.15.0+cpu`,
+  `transformers==5.22.2`, `psutil==7.2.2`.
+- `results/retrieval_compare_v3.jsonl` : 31 Q × top-20 reranké.
+- `results/rerank_scores_cache.jsonl` : 620 paires (question_id,
+  chunk_id, score_rerank, model_revision).
+
+Suite tests : +20 tests reranker, zéro régression.
+
+### Enseignements
+
+- **Le reranker « générique » ne bat pas un pipeline déjà
+  hybride.** Avec filtre entreprise + BM25 V2.1 + RRF, la
+  fusion est déjà informée de plusieurs signaux (lexical pour
+  les montants, sémantique pour les méthodes, filtre pour la
+  société). Ajouter un cross-encoder par-dessus brouille ces
+  signaux au lieu de les affiner.
+- **Mesurer AVANT d'estimer.** Le plan V3 annonçait
+  « ~5-15 min CPU ». Réalité : 47 min (batch=2 forcé par OOM).
+  Les longueurs tokenisées médianes (613) montrent qu'une page
+  BVMT tient largement dans un reranker à 512 tokens, mais
+  les max (1434) justifient a posteriori le choix de bge-v2-m3
+  à contexte 8192.
+- **Critère ex ante tient.** Sans un critère strict écrit
+  AVANT la mesure, il aurait été tentant de « rationaliser »
+  21/27 comme « presque 22/27 » ou de pointer les 3 gains
+  (Q13, Q21, Q23) comme une amélioration qualitative. Le
+  critère §4 interdit cette gymnastique : 21 ≤ 22, V3 rejetée.
+- **Garde-fou mémoire fonctionne.** Premier essai avec
+  batch=20 → OOM kill. Second essai avec batch=2 + libération
+  explicite → pic 2.9 GB, bien dans l'enveloppe 16 GB système.
+  Le cache incrémental n'a pas été exercé (pas de reprise
+  nécessaire) mais reste disponible.
+
+### Ce qui reste
+
+- V3 close. Pas de `evaluate_v3.py` écrit, pas de run LLM V3.
+- **Le jeu de validation (15 Q) reste intouché par V3.** Il
+  gardera son statut de « mesure indépendante finale » pour
+  une éventuelle V4.
+- Pour de futures itérations, pistes documentées **mais non
+  retenues ici** :
+  - Fine-tuning du reranker sur du français financier
+    (coûteux, hors scope étudiant).
+  - Reranker plus petit (`jina-reranker-v1-tiny-en`) pour
+    comparer vitesse/qualité.
+  - LLM-as-reranker (Flash-Lite sur des paires), mais ajouterait
+    un deuxième appel LLM par Q → coût prohibitif.
+
+

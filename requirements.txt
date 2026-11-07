@@ -18,3 +18,12 @@ chromadb>=0.5
 
 # Semaine 2 étape V2 — BM25 local (hybride dense + BM25)
 rank_bm25==0.2.2
+
+# V3 — reranker cross-encoder (BAAI/bge-reranker-v2-m3, Apache-2.0,
+# revision 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e). Charge via
+# transformers + torch ; téléchargement unique ~1.1 GB, cache
+# HuggingFace ~/.cache/huggingface/hub/. Versions épinglées :
+# scoring par lots de 2 + libération mémoire explicite entre lots.
+torch==2.15.0+cpu
+transformers==5.22.2
+psutil==7.2.2
