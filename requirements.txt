@@ -20,10 +20,19 @@ chromadb>=0.5
 rank_bm25==0.2.2
 
 # V3 — reranker cross-encoder (BAAI/bge-reranker-v2-m3, Apache-2.0,
-# revision 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e). Charge via
-# transformers + torch ; téléchargement unique ~1.1 GB, cache
-# HuggingFace ~/.cache/huggingface/hub/. Versions épinglées :
-# scoring par lots de 2 + libération mémoire explicite entre lots.
-torch==2.15.0+cpu
-transformers==5.22.2
-psutil==7.2.2
+# revision 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e). V3 NON retenue
+# par le critère §4 (plan V3, journal 2026-11-07) : R@5 = 21/27 <= 22.
+#
+# Ces 3 dépendances ne sont NÉCESSAIRES QUE pour relancer localement
+# le benchmark reranker (scripts/benchmark_rerank.py). Elles ne sont
+# PAS requises pour la CI : tous les tests de `tests/test_reranker.py`
+# mockent le modèle (aucun import torch au niveau module de
+# `bilanlens/reranker.py` ; les imports torch + transformers sont
+# repoussés dans la méthode `Reranker.__init__`).
+#
+# Pour installer localement (optionnel) :
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch==2.15.0+cpu
+#   pip install transformers==5.22.2 psutil==7.2.2
+#
+# Versions épinglées constatées 2026-11-07 (Windows CPU) :
+#   torch==2.15.0+cpu, transformers==5.22.2, psutil==7.2.2
