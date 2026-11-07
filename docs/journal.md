@@ -3676,38 +3676,52 @@ Lectures :
 
 - **Les 2 runs ont ZÉRO fausse sur le jeu de validation.** Sur
   31 Q, V2 avait 1 fausse (Q13, perte prévue hybride_filtre).
-  Sur 15 Q, le seul cas perdu (val_02) est RÉCUPÉRÉ par V2 par
-  rapport à V1.2.
+  Sur 15 Q, aucune réponse fausse ni invention.
 - **V2 ne gagne pas de Recall@5 vs V1.2** sur validation
-  (11/13 pour les deux). Le gain du filtre entreprise +
-  hybride_filtre se concentre sur UNE seule Q (val_02 passe
-  abstention → juste), et cette Q est déjà au R@5 côté V2
-  (page 3 Monoprix individuel dans le top-5) ET côté V1.2
-  (dense V1.2 enterre la page hors top-5).
-  Wait relisons : V1.2 R@5 = 11/13. V2 R@5 = 11/13. Donc val_02
-  est retrouvée au top-5 par les DEUX runs. Mais V1.2 abstenait
-  quand même → `abstention_a_tort_recall_ok` (recall OK, LLM
-  refuse). V2 retrouve la page AU RANG 1 (ou plus haut dans
-  le top-5), ce qui semble suffire pour que le LLM réponde.
-- **V2 R@1 < V1.2 R@1** (5/13 vs 7/13). La fusion RRF +
-  BM25 déplace certaines pages attendues du rang 1 vers un
-  rang 2-3. Ce n'est PAS un problème pour le LLM (top-5 reste
-  identique) mais c'est une régression de MRR masquée par le
-  gain en texte_annexes.
-- **Au R@3, V2 fait +3 vs V1.2** (10/13 vs 7/13). La fusion
-  remonte certaines pages attendues du top-5 vers le top-3.
+  (11/13 pour les deux). L'écart MRR V2 vs V1.2 (0,635 vs
+  0,629) est **négligeable** (+0,006).
+- **R@1 : 5/13 (V2) vs 7/13 (V1.2) ; R@3 : 10/13 (V2) vs 7/13
+  (V1.2).** Les deux runs retrouvent les mêmes 11 pages au R@5,
+  avec un classement interne différent dans le top-5. Je
+  n'identifie pas ici une cause spécifique à BM25 ou au
+  filtrage : trop peu d'observations et l'écart MRR final est
+  minime.
+- **Deux Q (val_02 et val_06) sont `juste` malgré un recall@5
+  KO strict.** Voir la section dédiée plus bas.
 
 ### Changement de classe V1.2 → V2
 
 Une seule Q change de classe : **val_02 (extraction, Monoprix
 individuel total actifs)** passe `abstention_a_tort_recall_ko`
-→ **juste**. Le filtre entreprise (SNMVT-Monoprix → monoprix_2024)
-+ BM25 V2.1 (« 305 449 843 » tokenisé comme montant + « total
-des actifs ») font remonter la page 3 Monoprix individuel dans
-le top-5, et le LLM sort la bonne valeur « 305 449 843 TND ».
+→ **juste**. Interprétation corrigée après inspection des
+top-20 :
 
-C'est exactement le pattern des Q25/Q30 des 31 Q (abstention
-avec page hors top-5 → juste avec page dans top-5).
+- **La page attendue (p. 3 de monoprix_2024, « Total des actifs
+  305 449 843 ») n'est dans le top-20 d'AUCUN des deux runs.**
+  Recall KO strict côté V1.2 ET côté V2.
+- **V2 répond 305 449 843 TND malgré le recall KO** : le top-1
+  V2 est `monoprix_2024 p. 2` (bilan actif), qui contient les
+  sous-totaux « Total des actifs non courants = 168 274 357 »
+  et « Total des actifs courants = 137 175 486 ». Le modèle a
+  additionné les deux (168 274 357 + 137 175 486 = 305 449 843)
+  et répondu la somme. Réponse juste par calcul intra-page,
+  pas par lecture directe.
+- **V1.2 avait aussi `monoprix_2024 p. 2` dans son top-5**
+  (au rang 2) mais s'est abstenue. V1.2 avait aussi des chunks
+  de `monoprix_consolide_2024` dans son top-5 (rangs 1 et 3),
+  ce que V2 n'a pas (le filtre entreprise SNMVT-Monoprix restreint
+  à `monoprix_2024`).
+- **La cause de la différence de comportement entre V1.2 et V2
+  reste une HYPOTHÈSE** : peut-être le mélange individuel +
+  consolidé dans le contexte V1.2 trouble le modèle (deux
+  bilans similaires avec des chiffres différents), et V2 lui
+  présente un contexte purement individuel plus clair à lire
+  et additionner. Non vérifié par une mesure dédiée.
+
+Ce n'est pas le pattern des Q25/Q30 des 31 Q (où la page
+attendue était RÉELLEMENT remontée dans le top-5 par V2.1).
+Ici, aucune page attendue n'est remontée ; c'est un cas
+« juste malgré recall KO » (cf. section dédiée).
 
 ### Note sur val_08 (SFBT ROA, abstention des deux runs)
 
@@ -3732,6 +3746,48 @@ Q14 et Q23 des 31 Q. Mêmes hypothèses non arbitrées :
 
 Nécessiterait une mesure prompt dédiée (variante prompt, mêmes
 chunks) pour trancher — hors scope V2.
+
+### Note sur les Q `juste` malgré recall@5 KO strict
+
+Deux Q de validation sont classées `juste` par le scorer mais
+ont `recall@5 = False` au sens strict (pages attendues
+manquantes dans le top-5) :
+
+- **val_02 (extraction, Monoprix individuel total actifs)** :
+  page attendue p. 3 absente du top-20 des deux runs. V2 répond
+  juste en additionnant les deux sous-totaux du bilan actif
+  (p. 2) ; V1.2 s'abstient. Détails ci-dessus.
+- **val_06 (calcul, autonomie financière Monoprix individuel)** :
+  pages attendues p. 3 (total actifs) + p. 4 (CP).
+  - V1.2 : p. 4 au rang 3, p. 3 absente → recall KO. Le modèle
+    répond juste (31,36 %) car la p. 4 (bilan passif) contient
+    AUSSI la ligne « Total des capitaux propres et passifs
+    305 449 843 » qui égale le total actif par construction.
+    Le ratio CP (95 774 305) / total passif (305 449 843) =
+    31,36 % se lit entièrement sur p. 4.
+  - V2 : p. 4 au rang 1, p. 3 absente → même configuration.
+    Même réponse.
+
+Ce sont deux cas d'arithmétique intra-page et de lecture
+croisée sur le bilan passif. Ils confirment que le critère
+strict « toutes les pages de intermediate_values dans le
+top-k » peut sous-estimer la capacité du modèle à répondre
+quand la matière est présente sous une autre forme (sous-
+totaux additionnables, ligne « total CP et passifs » qui égale
+« total actif »). À documenter mais pas à « corriger » dans le
+scoring : le critère strict reste défensif.
+
+### Note sur val_13 (texte_annexes, engagement SICAR AMEN)
+
+L'écart entre V1.2 (complete = false) et V2 (complete = true)
+n'est PAS dû à une différence de retrieval : le chunk utile
+(p. 16 de `delice_holding_2024`) est au **rang 1** dans les
+deux runs. Le contexte envoyé au LLM est donc quasi identique.
+
+L'écart vient de la **formulation du modèle** : V2 inclut la
+valeur nominale unitaire de 286 dinars, V1.2 l'omet.
+Variance de génération, pas de retrieval. Non attribuable à
+BM25 ni au filtre.
 
 ### Notes sur la couverture du jeu de validation
 
@@ -3759,12 +3815,28 @@ chunks) pour trancher — hors scope V2.
    Le modèle tend à donner le motif principal sans les détails
    chiffrés secondaires — comportement cohérent avec le prompt
    V1.2 qui privilégie la réponse synthétique.
-4. **15 questions donnent une TENDANCE, pas une PREUVE.**
+4. **Le jeu de validation est peut-être plus FACILE que le
+   benchmark principal.** Beaucoup de questions reposent sur
+   des totaux de bilan (val_02 total actifs, val_05 et val_06
+   autonomies qui utilisent total passif, val_08 ROA qui
+   utilise total bilan, val_09 variation total actifs), chiffres
+   qui apparaissent typiquement en toute dernière ligne du
+   bilan actif / passif et sont donc faciles à récupérer par
+   retrieval dense. Un benchmark plus dur contiendrait
+   davantage de Q sur des sous-postes rares (val_04 dividendes
+   CLC illustre ce type), des notes rarement référencées
+   (val_11, val_12, val_13 vont dans ce sens) et des calculs
+   multi-page sans pivot commun (seul val_07 le fait, et sur
+   une page unique).
+5. **15 questions donnent une TENDANCE, pas une PREUVE.**
    L'écart V2 vs V1.2 sur validation (14/15 vs 13/15, +1 Q)
    est dans la variance d'échantillon : un seul changement de
    classe (val_02). Les résultats sur 15 Q ne discriminent
    pas statistiquement les deux pipelines ; ils confortent
    l'ordre observé sur 31 Q mais ne suffisent pas à conclure.
+   Combinée au point 4 (jeu plus facile), cette tendance peut
+   être OPTIMISTE par rapport à ce qu'un benchmark de même
+   difficulté que les 31 Q montrerait.
 
 ### Dépendance du jeu de validation aux PDFs
 
