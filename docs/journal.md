@@ -3897,3 +3897,277 @@ Partie A, zéro régression).
   val_11 + val_12).
 
 
+
+---
+
+## 2026-11-07 — Plan V3 (reranker) — pas de code, pas de run
+
+### Principe V3
+
+Pipeline :
+1. Retrieval V2.1/hybride_filtre identique à V2 → **top-20
+   candidats** (filtre entreprise, BM25 V2.1 IDF recalculée sur
+   le périmètre, fusion RRF k=60 sur top-50 dense + top-50 BM25).
+2. **Reranker** : reclasse ces 20 candidats via un cross-encoder
+   multilingue → nouveau top-5.
+3. LLM : top-5 reranké envoyé au prompt V1.2 inchangé.
+
+**Rien d'autre ne change** : prompt V1.2, modèle Flash-Lite,
+temperature = 0, filtre entreprise, BM25, RRF, k=5 contexte final.
+Seul le reclassement final des 5 chunks envoyés au LLM change.
+
+### §1. Modèle de reranker (figé avant toute mesure)
+
+- **Modèle** : `BAAI/bge-reranker-v2-m3` (BAAI, 568 M paramètres).
+- **Version épinglée** : commit HuggingFace figé dans le code
+  via `revision="<sha>"` à la construction de l'AutoModel (sha
+  à récupérer au moment du pin ; ex. `revision="ba3a7e4"` au
+  2026-11-07 pour la branche `main`). Le commit est documenté
+  dans `requirements.txt` et dans `bilanlens/reranker.py`.
+- **Librairie** : `FlagEmbedding==1.3.4` (dernière stable
+  2026-11-07) ou `transformers` direct. Ajoutée à
+  `requirements.txt`. Dépend aussi de `torch` (non épinglé plus
+  précisément que la compatibilité FlagEmbedding).
+- **Pourquoi celui-ci :**
+  - Multilingue, bon sur le français (évaluation FR dans la
+    carte modèle BAAI).
+  - **Contexte 8192 tokens**, donc une page de rapport BVMT
+    (1500-3000 tokens max) **tient entière** sans troncation.
+    Point clé pour éviter de perdre un tableau de bilan en fin
+    de page.
+  - Open weights, déterministe, local → **zéro appel API**,
+    coût marginal nul par run (après le téléchargement initial).
+    Reproductible.
+- **Alternatives écartées** :
+  - `cross-encoder/ms-marco-MiniLM-L6-v2` : context 512 tokens
+    → oblige à fenêtre glissante, risque de perdre du contenu.
+    Anglais, pas optimisé français.
+  - `jinaai/jina-reranker-v2-multilingual-base` : context 1024,
+    insuffisant pour une page complète.
+  - Cohere Rerank API : payant + dépendance externe → écarté
+    pour la reproductibilité.
+- **Coût prévu** : téléchargement unique ≈ 1.1 GB. RAM runtime
+  ≈ 2 GB (modèle en float32) ou ≈ 1 GB (float16 sur GPU).
+- **Temps prévu par Q** (31 Q × 20 candidats = 620 paires) :
+  - **CPU** (Intel i7 moderne) : ≈ 0.5-1.5 s par paire
+    → **~5 à 15 min** pour le benchmark complet.
+  - GPU (CUDA capable) : ≈ 50-150 ms par paire → ~1 à 2 min.
+  - Le script auto-détecte le device via torch ; CPU fallback
+    accepté (c'est un benchmark offline, le temps n'est pas
+    critique).
+
+### §2. Gestion des chunks longs
+
+- **Longueur réelle des chunks du corpus** : à mesurer avant
+  de coder. Les chunks font 1 page physique (source :
+  `scripts/chunk_corpus.py`), avec une variance importante
+  (une page de couverture ≈ 50 tokens, une page de bilan avec
+  tableau dense ≈ 2000-3000 tokens, une note annexe narrative
+  ≈ 500-1500 tokens).
+- **Stratégie retenue** : **contexte 8192 tokens suffisant pour
+  toutes nos pages**. On passe la page ENTIÈRE au reranker, sans
+  troncation ni fenêtre glissante. Garde-fou dans le code :
+  avant l'appel, calculer le nombre de tokens de la paire
+  (question + chunk) ; si > 8000 tokens, lever une exception
+  explicite (plutôt qu'une troncation silencieuse qui perd la
+  fin de la page, souvent un tableau).
+- **Raison d'écarter la fenêtre glissante** : elle multiplie
+  les appels reranker (3-5× par chunk long), rend l'agrégation
+  non triviale (max ? mean ? pooling ?), et ajoute une
+  hyperparam supplémentaire (stride). Avec un contexte 8192,
+  le problème n'existe pas.
+- **Test sans réseau** : un chunk fabriqué de 3000 tokens doit
+  passer tel quel ; un chunk de 9000 tokens doit lever
+  l'exception garde-fou.
+
+### §3. Nombre de candidats et ordre stable
+
+- **Nombre de candidats à reclasser : 20 par question.**
+- **Justification** :
+  - Recall@20 de V2.1/hybride_filtre = **27/27** sur les 31 Q
+    (100 %, mesuré dans `benchmark_retrieval.py`). **Toutes les
+    pages attendues sont déjà dans le top-20 V2**, donc le
+    reranker a accès à toute la matière pertinente.
+  - 50 candidats donnerait 1550 paires au lieu de 620 → 2.5×
+    plus de temps pour un gain marginal non justifié (les
+    chunks rang 21-50 n'ont contribué à aucune page attendue
+    dans les 31 Q du benchmark).
+  - Si une future Q voit sa page attendue tomber au-delà du
+    rang 20 de V2, le choix serait à réexaminer ; à ce jour
+    aucun cas.
+- **Ordre stable en cas d'égalité de score reranker** :
+  tie-break identique à V2 → `chunk_id` alphanumérique
+  croissant. Appliqué dans `bilanlens/reranker.py`. Test
+  unitaire dédié (deux chunks à score reranker égal → ordre
+  chunk_id croissant).
+
+### §4. Critère de choix (écrit AVANT toute mesure)
+
+**La configuration reranker retenue pour V3 doit avoir un
+`Recall@5` strictement supérieur à 22/27 sur les 31 Q du
+benchmark principal.** Départage en cas d'égalité : `MRR` plus
+élevé.
+
+**Si aucun réglage reranker ne dépasse 22/27, on garde V2
+(pas de V3, pas de run LLM V3).** Une égalité à 22/27 est un
+match nul : pas assez pour justifier le coût (modèle 1.1 GB
+téléchargé, ~10 min de CPU par run, nouvelle dépendance
+`FlagEmbedding` + `torch`) et la complexification du pipeline.
+
+Garde-fous :
+- Si la mesure montre que V3 fait +3 ou +4 Q au R@5 mais
+  injecte UNE régression (R@5 KO pour une Q où V2 était OK),
+  le critère strict reste **net positif seulement** : le R@5
+  est un entier, un gain net de +1 min suffit, pas un gain
+  brut avec pertes cachées ailleurs.
+- Mesure du MRR à titre indicatif ; départage uniquement si
+  deux configs reranker atteignent le même R@5 strict > 22/27.
+
+### §5. Mesure sans LLM sur les 31 Q
+
+Avant tout run LLM V3, produire pour les 31 Q :
+
+- **Recall@1, Recall@3, Recall@5, Recall@10** pour la config
+  reranker. (R@20 n'est pas informatif puisqu'on part des 20
+  V2 : R@20 reranker = R@20 V2 = 27/27 par construction.)
+- **MRR** sur les 27 Q avec page attendue.
+- **Gains / pertes au R@5 par Q** vs V2 (variante v2.1 /
+  hybride_filtre) :
+  - gains : Q où V2 R@5 KO → reranker R@5 OK
+  - pertes : Q où V2 R@5 OK → reranker R@5 KO
+  - net = gains − pertes
+- **Rangs des pages attendues pour 5 Q d'intérêt** (toutes
+  problématiques dans V2) :
+  - **Q12** monoprix_consolide_2024 (texte_annexes) : V2 rang 1,
+    LLM abstient toujours ;
+  - **Q13** monoprix_2024 individuel (extraction) : V2 R@5 KO
+    (page 5 hors top-5), V2 LLM FAUSSE ;
+  - **Q14** monoprix_2024 individuel (calcul) : V2 R@5 OK,
+    LLM abstient (cause inconnue) ;
+  - **Q21** sfbt_2024 (texte_annexes) : V2 R@5 KO (rang 11
+    hybride_filtre), LLM abstient ;
+  - **Q23** ciments_bizerte_2024 (calcul) : V2 R@5 OK partiel
+    (1 page sur 2 dans top-5), LLM abstient.
+- **Validation du pipeline amont** : la config
+  `v2.1/hybride_filtre` recalculée dans le benchmark V3 doit
+  redonner **R@5 = 22/27** et **MRR = 0.7136** sur les 31 Q
+  (chiffres de `benchmark_retrieval.py`). Garde-fou ; si
+  différent, le pipeline amont a bougé.
+
+### §6. Rôle du jeu de validation
+
+- **Le jeu de validation (15 Q) NE SERT PAS à choisir la
+  configuration V3.** Toutes les décisions de §1 à §4 sont
+  prises AVANT toute mesure sur ce jeu.
+- **Le jeu de validation est utilisé UNE SEULE FOIS, à la
+  FIN**, après le choix de la config reranker et un éventuel
+  run LLM V3 sur les 31 Q. Le run LLM V3 sur les 15 Q est
+  lancé uniquement si §4 est satisfait sur 31 Q.
+- **Risque de surapprentissage** mitigé par cette séquence :
+  les 31 Q sont utilisées pour le critère, les 15 Q comme
+  mesure indépendante finale.
+- Si la V3 est retenue mais que les 15 Q montrent une
+  régression nette (perte > 1 Q bons résultats vs V2 sur
+  validation), c'est un signal qu'il faut documenter mais
+  pas « corriger » : le benchmark de choix reste les 31 Q.
+
+### §7. Fichiers, tests sans réseau, garde-fous
+
+#### Modules à créer
+
+- **`bilanlens/reranker.py`** : adaptateur pour
+  `BAAI/bge-reranker-v2-m3`. Interface minimale :
+  - `class Reranker` avec `__init__(model_name, revision,
+    device="auto")` et `score_pairs(pairs: list[tuple[str, str]])
+    → list[float]`.
+  - `def reranker_top_k(question, candidates_top_k_list,
+    chunks_par_id, top_final, tie_break="chunk_id") → list[dict]`.
+  - Garde-fou longueur : exception si question+chunk
+    dépasse 8000 tokens.
+  - Tie-break : `(-score, chunk_id)` croissant.
+- **`scripts/build_reranker_cache.py`** (optionnel) : indexe
+  les scores reranker pour les 31 Q × 20 candidats et
+  sauvegarde sur disque. Permet de relancer les benchmarks
+  sans retomber les ~10 min CPU. Idempotent : hash
+  (model_name, revision, question, chunk_id) → score.
+- **`scripts/benchmark_rerank.py`** : mesure les métriques §5
+  sans appeler le LLM. Charge V2.1/hybride_filtre top-20 depuis
+  `results/retrieval_compare.jsonl` (variante v2.1, config
+  hybride_filtre), appelle le reranker, écrit
+  `results/retrieval_compare_v3.jsonl` et imprime les métriques.
+- **`scripts/evaluate_v3.py`** : pipeline V3 complet (si §4
+  OK). Reprend `evaluate_v2.py` en substituant le top-5
+  hybride_filtre par le top-5 reranké. Écrit `results/v3.jsonl`.
+- **`scripts/score.py --mode v3`** : scoring V3 selon règles
+  V1.2, comparaison V2 vs V3 par catégorie.
+
+#### Tests sans réseau
+
+- `tests/test_reranker.py` :
+  - Mock du modèle (scores pré-calculés), vérification du
+    tri par score décroissant.
+  - Tie-break par `chunk_id` croissant sur scores égaux.
+  - Garde-fou longueur : paire 9000 tokens → exception.
+  - Interface `score_pairs` : retourne une liste de float de
+    même taille que l'entrée, ordre préservé.
+- `tests/test_benchmark_rerank.py` :
+  - Fausse `Reranker` qui renvoie des scores mock.
+  - Vérifie que le top-5 reranké utilise l'ordre du reranker,
+    pas celui de l'entrée.
+  - Vérifie que la validation « V2.1 R@5 = 22/27 » du pipeline
+    amont fait échouer le benchmark si le top-20 d'entrée est
+    modifié.
+- Pas de test qui télécharge le modèle réel ni qui l'appelle ;
+  tout est mocké ou passé en injection de dépendance.
+
+#### Garde-fous d'exécution
+
+- Reproductibilité : `torch.manual_seed(0)`, `float32` par
+  défaut (float16 seulement sur GPU et noté explicitement).
+- Détection déterministe du device : `torch.cuda.is_available()`
+  → GPU ; sinon CPU. Device utilisé loggé dans la sortie.
+- Si la version du modèle téléchargée diffère de la révision
+  épinglée dans le code, le script échoue à la construction
+  (sécurité anti-dérive de modèle).
+
+### §8. Décisions figées pour V3
+
+- **Prompt V1.2 inchangé.**
+- Pipeline retrieval amont : V2.1/hybride_filtre inchangé.
+- Modèle reranker : `BAAI/bge-reranker-v2-m3`, revision
+  épinglée.
+- Candidats à reclasser : 20 par question.
+- Top final envoyé au LLM : 5 (comme V2).
+- Critère §4 (R@5 strict > 22/27) écrit avant toute mesure.
+- Pas de code V3 dans le journal. Pas de run V3 dans le
+  journal.
+
+### §9. Risques identifiés
+
+- **Modèle trop lourd pour le CI GitHub.** Les CI ne peuvent
+  pas télécharger 1.1 GB à chaque run. Le reranker ne tournera
+  QUE localement. Les tests CI sont tous sans réseau (mocks).
+  Le benchmark de choix et le run LLM se font sur ma machine.
+- **Dérive du modèle HuggingFace.** `revision` épinglé dans
+  le code évite ; garde-fou qui fail-fast si mismatch.
+- **Cache reranker scores** : si les scores sont mis en cache
+  sur disque, le hash doit inclure la révision du modèle.
+  Changer de revision doit invalider le cache.
+- **Risque de ne rien améliorer.** Avec R@20 V2 = 100 %, le
+  reranker ne peut qu'améliorer le classement interne. S'il
+  n'y a pas de marge réelle sur les 5 Q qui restent en recall
+  KO au R@5 (Q13, Q21 et 2 pages de Q23 / Q27 / Q30 wait
+  Q30 est R@5 OK en V2), le critère §4 ne sera pas atteint.
+  Ce n'est pas un bug, c'est une mesure.
+
+### Ce qui n'est PAS dans V3
+
+- Pas de ré-entraînement / fine-tuning du reranker : on prend
+  le modèle tel quel, c'est le seul choix traçable.
+- Pas d'ensemble de rerankers (ex. cross-encoder + LLM-as-
+  reranker). Ajouterait un levier de fit, pas souhaitable avant
+  une mesure baseline.
+- Pas de combinaison reranker + re-tokenisation des Q. V2.1 déjà
+  en place.
+
+
