@@ -3809,12 +3809,25 @@ BM25 ni au filtre.
    déjà utilisé comme dénominateur dans Q02. Ces Q ne testent
    pas de NOUVELLES valeurs : elles testent la capacité du
    retrieval à trouver ces valeurs sous d'autres angles.
-3. **Les trois `texte_annexes` sont incomplètes de la même
-   manière.** val_11 et val_13 ont été annotées `complete=false`
-   (manque 114 128 tonnes ; manque 286 DT). val_12 complète.
-   Le modèle tend à donner le motif principal sans les détails
-   chiffrés secondaires — comportement cohérent avec le prompt
-   V1.2 qui privilégie la réponse synthétique.
+3. **Complétude des trois `texte_annexes` : contrastée.**
+   - **val_11** : incomplète dans les DEUX runs
+     (`complete=false`), même élément manquant (114 128 tonnes
+     de clinker achetées).
+   - **val_13** : incomplète SEULEMENT en V1.2
+     (`complete=false`, manque la valeur nominale 286 DT) ;
+     complète en V2 (`complete=true`). Le chunk p. 16 est au
+     rang 1 pour les deux runs, donc l'écart vient de la
+     formulation du modèle, pas du retrieval.
+   - **val_12** : complète dans les DEUX runs
+     (`complete=true`), tous les éléments demandés par la
+     question (date + cause) sont présents.
+   *Hypothèse non vérifiée* : la consigne V1.2 « donne
+   uniquement le résultat final avec son unité » vise
+   explicitement les CALCULS (contexte R1/R2 du prompt). Son
+   effet sur les réponses `texte_annexes` n'a pas été mesuré
+   séparément ; il est possible qu'elle pousse le modèle à
+   abréger les réponses texte, mais ce n'est pas établi par
+   une comparaison contrôlée.
 4. **Le jeu de validation est peut-être plus FACILE que le
    benchmark principal.** Beaucoup de questions reposent sur
    des totaux de bilan (val_02 total actifs, val_05 et val_06
