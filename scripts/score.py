@@ -1559,6 +1559,274 @@ def mode_v2(questions: list[dict]) -> int:
     return 0
 
 
+# Chemins jeu de validation (Partie B du plan)
+BENCH_VALIDATION_PATH = (
+    RACINE / "data" / "benchmark" / "questions_validation.jsonl"
+)
+V1_2_VALIDATION_PATH = RACINE / "results" / "v1_2_validation.jsonl"
+V2_VALIDATION_PATH = RACINE / "results" / "v2_validation.jsonl"
+RETRIEVAL_CMP_VALIDATION_PATH = (
+    RACINE / "results" / "retrieval_compare_validation.jsonl"
+)
+SCORES_V1_2_VALIDATION_PATH = (
+    RACINE / "results" / "scores_v1_2_validation.jsonl"
+)
+SCORES_V2_VALIDATION_PATH = (
+    RACINE / "results" / "scores_v2_validation.jsonl"
+)
+
+
+def _charger_top20_par_variante(
+    retrieval_compare_path: Path,
+    variante: str, config: str,
+) -> dict[str, list[dict]]:
+    """Lecture d'un ``retrieval_compare*.jsonl`` filtré par
+    (variante, config). Retourne {question_id: top20_items}."""
+    out: dict[str, list[dict]] = {}
+    with retrieval_compare_path.open(encoding="utf-8") as src:
+        for ligne in src:
+            ligne = ligne.strip()
+            if not ligne:
+                continue
+            r = json.loads(ligne)
+            if r.get("variante") != variante:
+                continue
+            if r.get("config") != config:
+                continue
+            out[r["question_id"]] = r["retrieved_top20"]
+    return out
+
+
+def _afficher_comparaison_par_categorie(
+    scores_v1_2: list[dict], scores_v2: list[dict],
+    benchmark: list[dict],
+) -> None:
+    """Imprime la comparaison par catégorie : bons résultats,
+    justes, fausses, justes parmi réponses données."""
+    bench_cat = {q["id"]: q.get("category") for q in benchmark}
+
+    def grouper(scores):
+        par_cat = {}
+        for s in scores:
+            cat = bench_cat.get(s["question_id"])
+            if cat not in par_cat:
+                par_cat[cat] = []
+            par_cat[cat].append(s)
+        return par_cat
+
+    g1 = grouper(scores_v1_2)
+    g2 = grouper(scores_v2)
+    classes_bonnes = {"juste", "abstention_correcte"}
+    classes_fausses = {
+        "fausse_recall_ok", "fausse_recall_ko", "reponse_a_tort",
+    }
+    classes_abstention = {
+        "abstention_a_tort_recall_ok",
+        "abstention_a_tort_recall_ko",
+        "abstention_correcte",
+    }
+    cats = ["extraction", "calcul", "comparaison",
+            "texte_annexes", "sans_reponse"]
+    print()
+    print("=== Comparaison par catégorie (V1.2 / V2) ===")
+    print(f"{'Catégorie':<15} "
+          f"{'Bons V1.2':>10} {'Bons V2':>10} "
+          f"{'Justes V1.2':>12} {'Justes V2':>10} "
+          f"{'Fausses V1.2':>13} {'Fausses V2':>11}")
+    totaux = {"bons_1": 0, "bons_2": 0, "justes_1": 0,
+              "justes_2": 0, "fausses_1": 0, "fausses_2": 0,
+              "n": 0}
+    for cat in cats:
+        s1 = g1.get(cat, [])
+        s2 = g2.get(cat, [])
+        n = max(len(s1), len(s2))
+        if n == 0:
+            continue
+        bons_1 = sum(1 for s in s1 if s["classe"] in classes_bonnes)
+        bons_2 = sum(1 for s in s2 if s["classe"] in classes_bonnes)
+        justes_1 = sum(1 for s in s1 if s["classe"] == "juste")
+        justes_2 = sum(1 for s in s2 if s["classe"] == "juste")
+        fausses_1 = sum(1 for s in s1 if s["classe"] in classes_fausses)
+        fausses_2 = sum(1 for s in s2 if s["classe"] in classes_fausses)
+        print(f"{cat:<15} "
+              f"{bons_1:>6}/{n:<3} {bons_2:>6}/{n:<3} "
+              f"{justes_1:>9}/{n:<2} {justes_2:>7}/{n:<2} "
+              f"{fausses_1:>10}/{n:<2} {fausses_2:>8}/{n:<2}")
+        totaux["bons_1"] += bons_1
+        totaux["bons_2"] += bons_2
+        totaux["justes_1"] += justes_1
+        totaux["justes_2"] += justes_2
+        totaux["fausses_1"] += fausses_1
+        totaux["fausses_2"] += fausses_2
+        totaux["n"] += n
+    print(f"{'TOTAL':<15} "
+          f"{totaux['bons_1']:>6}/{totaux['n']:<3} "
+          f"{totaux['bons_2']:>6}/{totaux['n']:<3} "
+          f"{totaux['justes_1']:>9}/{totaux['n']:<2} "
+          f"{totaux['justes_2']:>7}/{totaux['n']:<2} "
+          f"{totaux['fausses_1']:>10}/{totaux['n']:<2} "
+          f"{totaux['fausses_2']:>8}/{totaux['n']:<2}")
+
+    # Justes parmi réponses données (hors abstention)
+    print()
+    print("=== Justes parmi réponses données (hors abstention) ===")
+    for lab, scores in [("V1.2", scores_v1_2), ("V2", scores_v2)]:
+        donnees = [s for s in scores
+                   if s["classe"] not in classes_abstention]
+        justes = [s for s in donnees if s["classe"] == "juste"]
+        pct = (
+            f"{100 * len(justes) / len(donnees):.1f} %"
+            if donnees else "n/a"
+        )
+        print(f"  {lab} : {len(justes)}/{len(donnees)} réponses "
+              f"données sont justes ({pct})")
+
+
+def mode_validation(questions: list[dict]) -> int:
+    """Score V1.2 et V2 sur le jeu de validation (15 Q) et
+    compare selon les mêmes règles que ``mode_v2``.
+
+    Zéro appel Chroma, zéro LLM : lit uniquement les 2 runs
+    précédemment produits + le fichier retrieval_compare_
+    validation.jsonl + les chunks locaux pour vdc.
+    """
+    questions_val = charger_jsonl(BENCH_VALIDATION_PATH)
+    print(f"Jeu de validation : {len(questions_val)} questions")
+
+    lignes_v1_2 = charger_jsonl(V1_2_VALIDATION_PATH)
+    if not lignes_v1_2:
+        print(f"ERREUR : {V1_2_VALIDATION_PATH} vide ou absent.")
+        return 1
+    run_id_v1_2 = lignes_v1_2[-1]["run_id"]
+    v1_2_par_qid = {l["question_id"]: l for l in lignes_v1_2
+                    if l.get("run_id") == run_id_v1_2}
+
+    lignes_v2 = charger_jsonl(V2_VALIDATION_PATH)
+    if not lignes_v2:
+        print(f"ERREUR : {V2_VALIDATION_PATH} vide ou absent.")
+        return 1
+    run_id_v2 = lignes_v2[-1]["run_id"]
+    v2_par_qid = {l["question_id"]: l for l in lignes_v2
+                  if l.get("run_id") == run_id_v2}
+
+    print(f"V1.2 : {len(v1_2_par_qid)}/{len(questions_val)} "
+          f"(run {run_id_v1_2})")
+    print(f"V2   : {len(v2_par_qid)}/{len(questions_val)} "
+          f"(run {run_id_v2})")
+
+    top20_v1_2 = _charger_top20_par_variante(
+        RETRIEVAL_CMP_VALIDATION_PATH, variante="v1_2",
+        config="dense",
+    )
+    top20_v2 = _charger_top20_par_variante(
+        RETRIEVAL_CMP_VALIDATION_PATH, variante="v2.1",
+        config="hybride_filtre",
+    )
+    print(f"Top-20 V1.2 chargé : {len(top20_v1_2)} questions")
+    print(f"Top-20 V2   chargé : {len(top20_v2)} questions")
+
+    chunks_locaux = charger_chunks_locaux()
+
+    ann_v1_2 = charger_annotations(run_id=run_id_v1_2)
+    ann_v2 = charger_annotations(run_id=run_id_v2)
+    print(f"Annotations V1.2 : {len(ann_v1_2)}")
+    print(f"Annotations V2   : {len(ann_v2)}")
+
+    scores_v1_2: list[dict] = []
+    scores_v2: list[dict] = []
+    for q in questions_val:
+        qid = q["id"]
+        if qid in v1_2_par_qid:
+            rec = v1_2_par_qid[qid]
+            textes = [
+                chunks_locaux.get(r["chunk_id"], "")
+                for r in sorted(
+                    rec.get("retrieved", []),
+                    key=lambda r: int(r.get("rank", 0)),
+                )
+            ]
+            scores_v1_2.append(
+                scorer_question(q, rec, top20_v1_2.get(qid, []),
+                                 textes, ann_v1_2,
+                                 run_id=run_id_v1_2)
+            )
+        if qid in v2_par_qid:
+            rec = v2_par_qid[qid]
+            textes = [
+                chunks_locaux.get(r["chunk_id"], "")
+                for r in sorted(
+                    rec.get("retrieved", []),
+                    key=lambda r: int(r.get("rank", 0)),
+                )
+            ]
+            scores_v2.append(
+                scorer_question(q, rec, top20_v2.get(qid, []),
+                                 textes, ann_v2,
+                                 run_id=run_id_v2)
+            )
+
+    with SCORES_V1_2_VALIDATION_PATH.open("w", encoding="utf-8") as f:
+        for s in scores_v1_2:
+            f.write(json.dumps(s, ensure_ascii=False) + "\n")
+    with SCORES_V2_VALIDATION_PATH.open("w", encoding="utf-8") as f:
+        for s in scores_v2:
+            f.write(json.dumps(s, ensure_ascii=False) + "\n")
+    print(f"Écrit : {SCORES_V1_2_VALIDATION_PATH.relative_to(RACINE)}")
+    print(f"Écrit : {SCORES_V2_VALIDATION_PATH.relative_to(RACINE)}")
+
+    print()
+    print("=== Stats V1.2 (validation) ===")
+    afficher_stats(scores_v1_2)
+    print()
+    print("=== Stats V2 (validation) ===")
+    afficher_stats(scores_v2)
+
+    _afficher_comparaison_par_categorie(
+        scores_v1_2, scores_v2, questions_val,
+    )
+
+    # Changements de classe
+    print()
+    print("=== Changements de classe V1.2 → V2 ===")
+    i_v1_2 = {s["question_id"]: s for s in scores_v1_2}
+    i_v2 = {s["question_id"]: s for s in scores_v2}
+    changes = []
+    for qid in sorted(i_v1_2):
+        if qid in i_v2 and i_v1_2[qid]["classe"] != i_v2[qid]["classe"]:
+            changes.append(
+                (qid, i_v1_2[qid]["category"],
+                 i_v1_2[qid]["classe"], i_v2[qid]["classe"])
+            )
+    if changes:
+        print(f"  {'qid':<16}  {'cat':<16}  "
+              f"{'V1.2':<32}  V2")
+        for qid, cat, c1, c2 in changes:
+            print(f"  {qid:<16}  {cat:<16}  {c1:<32}  {c2}")
+    else:
+        print("  (aucun changement)")
+
+    # Nouvelles fausses
+    print()
+    print("=== Nouvelles réponses fausses en V2 ===")
+    classes_fausses = {
+        "fausse_recall_ok", "fausse_recall_ko", "reponse_a_tort",
+    }
+    nouvelles = [
+        qid for qid in sorted(i_v1_2)
+        if qid in i_v2
+        and i_v2[qid]["classe"] in classes_fausses
+        and i_v1_2[qid]["classe"] != i_v2[qid]["classe"]
+    ]
+    if nouvelles:
+        for qid in nouvelles:
+            print(f"  {qid}  V1.2={i_v1_2[qid]['classe']}  "
+                  f"-> V2={i_v2[qid]['classe']}")
+    else:
+        print("  (aucune)")
+
+    return 0
+
+
 def mode_rebuild_context(questions: list[dict], question_id: str | None = None) -> int:
     """Reconstruit le contexte V1 depuis `results/v1.jsonl` +
     `data/chunks/*.jsonl` sans appeler Chroma ni l'API
@@ -1755,7 +2023,8 @@ def main() -> int:
     parseur = argparse.ArgumentParser(description="Score du run V1.")
     parseur.add_argument(
         "--mode",
-        choices=["v1", "compare", "rebuild-context", "v1-1", "v1-2", "v2"],
+        choices=["v1", "compare", "rebuild-context", "v1-1", "v1-2",
+                 "v2", "validation"],
         default="v1",
         help="'v1' : score le dernier run V1 (default). 'compare' : "
              "compare B0-strict / B0-libre / V1 (etape 8). "
@@ -1763,7 +2032,9 @@ def main() -> int:
              "results/v1.jsonl + data/chunks/, sans Chroma ni API "
              "embeddings (preparation V2 avec consigne modifiee). "
              "'v2' : score le run V2 (results/v2.jsonl) et compare "
-             "V1.2 vs V2 selon les regles du plan V2 §5."
+             "V1.2 vs V2 selon les regles du plan V2 §5. "
+             "'validation' : score les runs V1.2 et V2 sur le jeu "
+             "de validation (15 Q, Partie B)."
     )
     parseur.add_argument(
         "--run-id", default=None,
@@ -1791,6 +2062,8 @@ def main() -> int:
         return mode_v1_2(questions)
     if args.mode == "v2":
         return mode_v2(questions)
+    if args.mode == "validation":
+        return mode_validation(questions)
 
     lignes_v1 = charger_jsonl(V1_PATH)
     if not lignes_v1:

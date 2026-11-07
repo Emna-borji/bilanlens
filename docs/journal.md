@@ -3591,3 +3591,224 @@ zéro régression).
 - Aucune modification du prompt, de BM25, du filtre, de RRF.
 
 
+
+---
+
+## 2026-11-07 — Partie B : runs LLM V1.2 + V2 sur jeu de validation (15 Q)
+
+### Ce que j'ai fait
+
+Lancé en une passe `scripts/evaluate_validation.py` sur les 15 Q
+nouvelles du jeu de validation : **V1.2 (dense top-5) puis V2
+(v2.1/hybride_filtre top-5)**, prompt V1.2 inchangé byte-à-byte
+pour les deux runs, Flash-Lite, temperature = 0. Scoré avec
+`score.py --mode validation`.
+
+Zéro modification du prompt, du filtre entreprise, de BM25, de
+RRF.
+
+### Coût
+
+- **15 appels à l'API d'embeddings Gemini** (RETRIEVAL_QUERY,
+  une seule fois pour les 15 Q). Les chunks (247 vecteurs
+  RETRIEVAL_DOCUMENT) sont déjà en cache depuis l'indexation
+  V1. Le second run (V2) relit le cache → **0 appel API
+  embeddings supplémentaire**.
+- 30 appels Flash-Lite (15 V1.2 + 15 V2), temperature = 0.
+- 6 annotations manuelles validées par l'utilisateur
+  (val_11 × 2 runs, val_12 × 2 runs, val_13 × 2 runs).
+
+### Résultats globaux sur le jeu de validation (15 Q)
+
+| | V1.2 | V2 | Δ |
+|---|---|---|---|
+| juste | 11 | **12** | **+1** |
+| fausse_recall_ok | 0 | 0 | ± |
+| fausse_recall_ko | 0 | 0 | ± |
+| abstention_a_tort_recall_ok | 1 | 1 | ± |
+| abstention_a_tort_recall_ko | 1 | **0** | **−1** |
+| abstention_correcte | 2 | 2 | ± |
+| reponse_a_tort | 0 | 0 | ± |
+| **Bons résultats** | **13/15** | **14/15** | **+1** |
+
+Par catégorie (bons résultats) :
+
+| Catégorie | V1.2 | V2 |
+|---|---|---|
+| extraction (4) | 3/4 | **4/4** |
+| calcul (4) | 3/4 | 3/4 |
+| comparaison (2) | 2/2 | 2/2 |
+| texte_annexes (3) | 3/3 | 3/3 |
+| sans_reponse (2) | 2/2 | 2/2 |
+
+Retrieval (sur les 13 Q avec page attendue) :
+
+| | V1.2 | V2 |
+|---|---|---|
+| Recall@1 | **7/13** | 5/13 |
+| Recall@3 | 7/13 | **10/13** |
+| Recall@5 | 11/13 | 11/13 |
+| Recall@10 | 11/13 | 11/13 |
+| Recall@20 | 11/13 | 11/13 |
+| MRR | 0.629 | **0.635** |
+
+Justes parmi les réponses données (hors abstention) :
+
+- V1.2 : **11 / 11 = 100 %**.
+- V2 : **12 / 12 = 100 %**.
+
+**Aucune réponse fausse sur les deux runs sur le jeu de
+validation.** Pas de `reponse_a_tort`, pas de `fausse_*`,
+pas d'invention.
+
+### Comparaison avec le benchmark des 31 Q
+
+| Métrique | 31 Q V1.2 | 31 Q V2 | Validation V1.2 | Validation V2 |
+|---|---|---|---|---|
+| Bons résultats | 24/31 (77 %) | 26/31 (84 %) | 13/15 (87 %) | 14/15 (93 %) |
+| Justes | 20 | 22 | 11 | 12 |
+| Fausses | 0 | 1 | 0 | 0 |
+| Justes / réponses données | 20/20 (100 %) | 22/23 (95,7 %) | 11/11 (100 %) | 12/12 (100 %) |
+| Recall@5 | 19/27 (70 %) | 22/27 (81 %) | 11/13 (85 %) | 11/13 (85 %) |
+| MRR | 0.543 | 0.714 | 0.629 | 0.635 |
+
+Lectures :
+
+- **Les 2 runs ont ZÉRO fausse sur le jeu de validation.** Sur
+  31 Q, V2 avait 1 fausse (Q13, perte prévue hybride_filtre).
+  Sur 15 Q, le seul cas perdu (val_02) est RÉCUPÉRÉ par V2 par
+  rapport à V1.2.
+- **V2 ne gagne pas de Recall@5 vs V1.2** sur validation
+  (11/13 pour les deux). Le gain du filtre entreprise +
+  hybride_filtre se concentre sur UNE seule Q (val_02 passe
+  abstention → juste), et cette Q est déjà au R@5 côté V2
+  (page 3 Monoprix individuel dans le top-5) ET côté V1.2
+  (dense V1.2 enterre la page hors top-5).
+  Wait relisons : V1.2 R@5 = 11/13. V2 R@5 = 11/13. Donc val_02
+  est retrouvée au top-5 par les DEUX runs. Mais V1.2 abstenait
+  quand même → `abstention_a_tort_recall_ok` (recall OK, LLM
+  refuse). V2 retrouve la page AU RANG 1 (ou plus haut dans
+  le top-5), ce qui semble suffire pour que le LLM réponde.
+- **V2 R@1 < V1.2 R@1** (5/13 vs 7/13). La fusion RRF +
+  BM25 déplace certaines pages attendues du rang 1 vers un
+  rang 2-3. Ce n'est PAS un problème pour le LLM (top-5 reste
+  identique) mais c'est une régression de MRR masquée par le
+  gain en texte_annexes.
+- **Au R@3, V2 fait +3 vs V1.2** (10/13 vs 7/13). La fusion
+  remonte certaines pages attendues du top-5 vers le top-3.
+
+### Changement de classe V1.2 → V2
+
+Une seule Q change de classe : **val_02 (extraction, Monoprix
+individuel total actifs)** passe `abstention_a_tort_recall_ko`
+→ **juste**. Le filtre entreprise (SNMVT-Monoprix → monoprix_2024)
++ BM25 V2.1 (« 305 449 843 » tokenisé comme montant + « total
+des actifs ») font remonter la page 3 Monoprix individuel dans
+le top-5, et le LLM sort la bonne valeur « 305 449 843 TND ».
+
+C'est exactement le pattern des Q25/Q30 des 31 Q (abstention
+avec page hors top-5 → juste avec page dans top-5).
+
+### Note sur val_08 (SFBT ROA, abstention des deux runs)
+
+val_08 est une Q `calcul` :
+- Résultat net SFBT 2024 = 241 621 194,507 TND (p. 3 bilan passif)
+- Total bilan SFBT 2024 = 1 281 772 854,965 TND (p. 3 bilan passif)
+- Ratio attendu : 18,85 %
+
+Les DEUX runs (V1.2 et V2) retournent `donnee non disponible`,
+avec recall@5 = OK (page 3 bien dans le top-5) et vdc = True
+(les deux valeurs sont présentes dans le contexte).
+
+**La cause de l'abstention reste inconnue**, comme pour Q12,
+Q14 et Q23 des 31 Q. Mêmes hypothèses non arbitrées :
+- Prompt V1.2 conservateur sur des ratios où plusieurs lignes
+  du bilan peuvent être interprétées comme « résultat net » ou
+  « total actif » ;
+- Possible confusion sur le choix de la ligne « Résultat net »
+  parmi plusieurs options sur p. 3 (bilan passif) et p. 4
+  (état de résultat) ;
+- Un autre facteur contextuel non identifié.
+
+Nécessiterait une mesure prompt dédiée (variante prompt, mêmes
+chunks) pour trancher — hors scope V2.
+
+### Notes sur la couverture du jeu de validation
+
+1. **val_11 et val_12 portent sur le même sujet.** Toutes deux
+   portent sur la crise opérationnelle 2023-2024 des Ciments de
+   Bizerte, documentée dans les notes 2024 : val_11 interroge
+   l'EFFET (marge brute négative → arrêt production clinker),
+   val_12 interroge la CAUSE (arrêt production depuis le
+   15/10/2023 → rupture d'approvisionnement coke de pétrole +
+   brique réfractaire). Même topic métier, pages différentes
+   (p. 12 et p. 15). Le benchmark de validation n'apporte donc
+   qu'un seul angle couvrant à proprement parler pour cette
+   société sur ce sujet.
+2. **val_08 et val_09 reprennent des totaux déjà utilisés.**
+   val_08 (ROA SFBT) utilise le total bilan SFBT 1 281 772
+   854,965 qui est déjà la réponse de Q17 du benchmark
+   principal. val_09 (variation total actifs SOTUVER) utilise
+   350 310 164 qui est le total passif SOTUVER (= total actifs)
+   déjà utilisé comme dénominateur dans Q02. Ces Q ne testent
+   pas de NOUVELLES valeurs : elles testent la capacité du
+   retrieval à trouver ces valeurs sous d'autres angles.
+3. **Les trois `texte_annexes` sont incomplètes de la même
+   manière.** val_11 et val_13 ont été annotées `complete=false`
+   (manque 114 128 tonnes ; manque 286 DT). val_12 complète.
+   Le modèle tend à donner le motif principal sans les détails
+   chiffrés secondaires — comportement cohérent avec le prompt
+   V1.2 qui privilégie la réponse synthétique.
+4. **15 questions donnent une TENDANCE, pas une PREUVE.**
+   L'écart V2 vs V1.2 sur validation (14/15 vs 13/15, +1 Q)
+   est dans la variance d'échantillon : un seul changement de
+   classe (val_02). Les résultats sur 15 Q ne discriminent
+   pas statistiquement les deux pipelines ; ils confortent
+   l'ordre observé sur 31 Q mais ne suffisent pas à conclure.
+
+### Dépendance du jeu de validation aux PDFs
+
+Les pages NOUVELLES couvertes par le jeu de validation (hors
+pages des 31 Q) : SOTUVER p. 2, Monoprix individuel p. 3 et 4,
+SFBT p. 2 et 6, Ciments p. 3, 12 et 15, Délice p. 10, 13 et 16.
+Soit 11 pages nouvelles (pour 15 Q) + 4 Q qui réutilisent des
+pages du benchmark principal (val_05 Ciments p. 3 n'est en fait
+pas benchmark — p. 3 non utilisée par les 31 Q sur Ciments ;
+val_06 Monoprix p. 4 non utilisée ; val_08 SFBT p. 3 utilisée
+par Q17/Q18/Q19 ; val_10 Monoprix consolidé p. 4 utilisée par
+Q11/Q09).
+
+### Fichiers créés / modifiés
+
+- `scripts/evaluate_validation.py` — orchestrateur V1.2 + V2
+  avec compteur API embeddings et pré-embedding des 15 Q.
+- `scripts/score.py` — ajout mode `validation` + constantes
+  `V1_2_VALIDATION_PATH`, `V2_VALIDATION_PATH`,
+  `RETRIEVAL_CMP_VALIDATION_PATH`, et helper
+  `_charger_top20_par_variante`.
+- `tests/test_evaluate_validation.py` — 11 tests sans réseau
+  (constantes figées, run_id, format ligne, charger top20).
+- `results/v1_2_validation.jsonl` — 15 lignes.
+- `results/v2_validation.jsonl` — 15 lignes.
+- `results/retrieval_compare_validation.jsonl` — 30 lignes
+  (dense + hybride_filtre top-20 par Q).
+- `results/scores_v1_2_validation.jsonl` — 15 lignes.
+- `results/scores_v2_validation.jsonl` — 15 lignes.
+- `data/benchmark/annotations_texte.jsonl` — +6 annotations
+  (val_11 × 2, val_12 × 2, val_13 × 2).
+
+Suite totale : **391 passed, 3 deselected** (+11 depuis
+Partie A, zéro régression).
+
+### Décisions
+
+- Pas de V3. Pas de modification prompt, filtre, BM25, RRF.
+- Décision V2 close. Les résultats sur 15 Q confortent le
+  choix V2 vs V1.2 (+1 Q bons résultats, 0 fausses, R@3
+  meilleur, MRR légèrement meilleur) mais ne constituent pas
+  une preuve statistique indépendante : échantillon trop petit,
+  jeu partiellement corrélé au benchmark principal (totaux
+  partagés), angle sujet couvert plusieurs fois (Ciments
+  val_11 + val_12).
+
+
