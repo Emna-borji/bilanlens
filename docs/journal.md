@@ -4377,3 +4377,414 @@ Suite tests : +20 tests reranker, zéro régression.
     un deuxième appel LLM par Q → coût prohibitif.
 
 
+
+---
+
+## 2026-11-08 — Plan V4 (extraction de tableaux) — pas de code, pas de run
+
+### Principe V4
+
+Changer **le chunking** en détectant les tableaux dans les PDFs
+et en les stockant comme chunks structurés (Markdown), plutôt
+que comme flux de texte linéarisé (approche pdfplumber actuelle).
+
+**Reste figé** : prompt V1.2 inchangé byte-à-byte, retrieval
+V2.1/hybride_filtre inchangé (BM25, RRF, filtre entreprise).
+Seul le CONTENU des chunks change.
+
+---
+
+### §1. Diagnostic — questions touchées par les tableaux
+
+Deux problèmes observés sont attribués aux tableaux dans les
+runs précédents (V1 à V2). Après inspection des extractions
+pdfplumber, Camelot et Docling, il faut distinguer **constaté**
+de **supposé**.
+
+#### Q13 (monoprix_individuel, extraction du CA SNMVT)
+
+- **Chunk actuel (pdfplumber page 5)** : texte linéarisé. La
+  ligne pertinente est rendue :
+  « `Revenus 17 732 621 822 684 081 159` »
+  (= libellé + note + col 2024 + col 2023, collés par un
+  espace unique). Juste en-dessous, la ligne confuse-friendly :
+  « `Total des produits d'exploitation 746 256 912 697 149 741` ».
+- **Ce qu'il faudrait** : tableau structuré où chaque cellule
+  est isolée (voir §3).
+- **Diagnostic correct** : le vrai problème Q13 est
+  **retrieval**, pas extraction. V1 (dense) retrouvait page 5
+  et le LLM répondait 732 621 822. V2.1/hybride_filtre descend
+  page 5 hors top-5 ; le LLM lit alors page 8 et retourne
+  746 256 912 (total produits d'exploitation). **pdfplumber
+  retrouve 732 621 822 proprement sur p. 5** ; un meilleur
+  chunking tableau ne résout pas Q13 seul si p. 5 reste hors
+  top-5. Supposé : chunker en Markdown pourrait aider BM25 à
+  mieux distinguer les lignes « Revenus » et « Total des
+  produits d'exploitation » (deux montants dans deux cellules
+  séparées plutôt que deux lignes de flux textuel voisines).
+
+#### Fusion colonnes « 732 595 162 684 081 159 » (val_02 et observations val_X)
+
+- **Chunk actuel (pdfplumber page 21 monoprix_consolide)** :
+  pdfplumber linéarise le tableau de ventilation des revenus
+  en :
+  « `Ventes des marchandises chez la SNMVT 732 595 162 684 081 159` »
+  Les deux montants (732 595 162 et 684 081 159) sont **séparés
+  par un seul espace**, pas collés — pdfplumber préserve la
+  séparation.
+- **Problème RÉEL (constaté)** : la **tokenisation V2.1**
+  `(?<=\d) (?=\d)` fusionne de manière greedy TOUS les chiffres
+  séparés par un seul espace. Appliquée à cette ligne elle
+  produit le token monolithique
+  « `732595162684081159` » — 18 chiffres. Un montant qui
+  n'existe dans aucune question du benchmark, donc token
+  « mort » côté BM25.
+- **Ce qu'il faudrait** : soit (a) corriger la tokenisation
+  (bornage sur les colonnes connues), soit (b) chunker en
+  tableau structuré pour que chaque cellule soit tokenisée
+  indépendamment, chaque cellule étant un montant distinct.
+- **Choix privilégié** : (b), parce qu'il traite le problème
+  à la source (l'ambigüité colonne/colonne existe DANS le PDF,
+  pas dans la tokenisation).
+
+#### val_02 (Monoprix individuel, total actifs 305 449 843)
+
+- **Chunk actuel (page 2 bilan actif)** : contient les
+  sous-totaux `Total actifs non courants = 168 274 357` et
+  `Total actifs courants = 137 175 486`. Le total agrégé
+  (305 449 843) se trouve en page 3 (bilan passif, ligne
+  « Total des capitaux propres et passifs », égale par
+  construction au total actifs).
+- **Ce qu'il faudrait** : pour l'instant, la page attendue
+  (p. 3) n'est pas dans le top-20 V2 ni V1.2. V4 chunking
+  tableau **n'aide pas directement** : si p. 3 n'est pas
+  récupérée, le total n'est pas accessible même sous forme
+  structurée.
+- **Diagnostic** : val_02 est un problème de **retrieval**,
+  pas de chunking. Hors scope V4.
+
+#### Autres cas listés par le journal
+
+- Q14 (calcul monoprix individuel) : recall OK, LLM abstient.
+  Problème **prompt**, pas tableau.
+- Q23 (calcul Ciments) : 1 des 2 pages attendues hors top-5.
+  Problème retrieval/arithmétique. Un tableau structuré
+  aiderait peut-être : en V2 on lit « Résultat net de
+  l'exercice -44 790 355 -34 355 944 » en flux ; en Markdown
+  on aurait [Libellé | 31/12/2024 | 31/12/2023] avec les
+  deux valeurs clairement séparées en colonnes. Mais la
+  valeur était déjà extraite correctement, le problème est le
+  LLM qui abstient. Non résolu par V4.
+- val_08 (ROA SFBT) : cause de l'abstention inconnue, même
+  pattern que Q12/Q14/Q23. Hors scope V4.
+
+**Conclusion §1** : V4 adresse principalement **le problème
+`732 595 162 684 081 159` de val_X et les ambigüités Q13 entre
+« Revenus » et « Total des produits d'exploitation »**. V4
+**n'adresse pas** les problèmes de recall (val_02, val_06, Q13)
+ni les abstentions LLM inexpliquées (Q12, Q14, Q23, val_08).
+
+---
+
+### §2. Comparaison de 3 outils d'extraction de tableaux
+
+Testés sur **trois pages ciblées** : monoprix_2024 p. 5 (Q13
+revenus), monoprix_consolide_2024 p. 21 (fusion colonnes),
+ciments_bizerte_2024 p. 3 (bilan passif).
+
+| Outil | Version | Licence | Install Windows | PDF scanné | Qualité page 5 Mono | Qualité page 21 Mono-c | Qualité page 3 Ciments |
+|---|---|---|---|---|---|---|---|
+| **pdfplumber** (actuel) | 0.11 | MIT | `pip install pdfplumber` | Non (OCR externe) | **0 table détectée**, flux linéarisé, montants collés | **0 table détectée**, flux linéarisé | 1 table dégénérée, col 1 fusionnée par `\n` |
+| **Camelot** flavor=stream | 2.0 | MIT | `pip install camelot-py` (Ghostscript optionnel pour flavor=lattice) | Non (texte uniquement) | **1 table × 26 lignes × 4 cols, accuracy 98.8** | **3 tables, accuracy 94-97, colonnes nettes** | **1 table × 8 lignes × 4 cols, accuracy 100** |
+| **Docling** | 2.149 | MIT (IBM) | `pip install docling` (~500 MB de modèles téléchargés au 1er run) | **Oui** (TableFormer + OCR intégré) | **Table Markdown parfaite** incluant chaque libellé/note/2024/2023 sur ligne séparée | **3 tables Markdown**, SNMVT / MONOGROS / etc. séparés | **Table Markdown complète**, tous les sous-postes alignés avec Notes |
+
+**Résultats bruts** (3 lignes clés par outil-page) :
+
+**pdfplumber p. 5 Mono** : extract_text seulement →
+`Revenus 17 732 621 822 684 081 159`
+`Total des produits d'exploitation 746 256 912 697 149 741`
+(flux linéarisé ; .extract_tables() = 0 table).
+
+**Camelot p. 5 Mono** (flavor=stream) →
+```
+Revenus | 17 | 732 621 822 | 684 081 159
+Autres produits d'exploitation | 18 | 13 635 090 | 13 068 582
+Total des produits d'exploitation | | 746 256 912 | 697 149 741
+```
+accuracy=98.8. Colonnes séparées, chaque montant est une cellule
+isolée.
+
+**Docling p. 5 Mono** →
+```
+| Produits d'Exploitation           | Notes | 2024        | 2023        |
+|-----------------------------------|-------|-------------|-------------|
+| Revenus                           |    17 | 732 621 822 | 684 081 159 |
+| Autres produits d'exploitation    |    18 | 13 635 090  | 13 068 582  |
+| Total des produits d'exploitation |       | 746 256 912 | 697 149 741 |
+...
+```
+Markdown directement consommable.
+
+**Camelot p. 21 Mono-c** (zone « fusion colonnes ») →
+```
+Ventes des marchandises chez la SNMVT | 732 595 162 | 684 081 159
+Ventes des marchandises chez MONOGROS | 3 829 079 | 1 975 214
+```
+Les deux montants sont dans deux cellules distinctes ; la
+« fusion colonnes » du token V2 disparaît.
+
+**Docling p. 21 Mono-c** → identique à Camelot, format
+Markdown.
+
+**pdfplumber p. 21 Mono-c** →
+`Ventes des marchandises chez la SNMVT 732 595 162 684 081 159`
+(flux ; les deux montants restent séparés par un espace, mais
+rien ne dit au tokenizer qu'ils sont dans 2 colonnes).
+
+**Camelot p. 3 Ciments** (bilan passif) →
+```
+Capital social | | 44 047 290 | 44 047 290
+Réserves et primes liées au capital | 9 | 100 809 614 | 100 894 684
+...
+Total des capitaux propres avant affectation | | 143 302 286 | 21 742 193
+...
+Total des capitaux propres et des passifs | | 388 668 436 | 241 664 543
+```
+accuracy=100. Chaque sous-poste bien aligné.
+
+**Docling p. 3 Ciments** → identique, format Markdown.
+
+**pdfplumber p. 3 Ciments** → 1 table détectée mais la colonne
+libellés est fusionnée (tous les libellés concatenés par `\n`
+dans une seule cellule, impossible de réaligner).
+
+### §2 bis — Verdict comparaison
+
+- **pdfplumber** : insuffisant pour le structuré-tableau. On
+  le garde pour le texte narratif des notes annexes.
+- **Camelot flavor=stream** : excellent, sans dépendance
+  Ghostscript. Peut servir de base.
+- **Docling** : qualité équivalente + output Markdown
+  directement consommable + support des PDF scannés
+  (TableFormer). Modèles plus lourds (~500 MB) mais pas de
+  problème sur notre corpus local.
+
+**Préférence** (à confirmer par mesure, pas une décision figée
+ici) : **Docling** pour le Markdown clé-en-main et la robustesse
+aux scannés. Camelot reste l'option de repli en cas de bug
+Docling.
+
+---
+
+### §3. Format proposé pour un chunk « tableau »
+
+Pour chaque tableau détecté, produire un chunk JSONL avec les
+champs suivants, en plus des métadonnées existantes (`doc`,
+`page_physique`, `sous_numero`) :
+
+```json
+{
+  "doc": "monoprix_2024",
+  "page_physique": 5,
+  "sous_numero": 0,
+  "chunk_type": "tableau",
+  "titre": "ETAT DE RESULTAT",
+  "unite": "DT",
+  "exercices": [2024, 2023],
+  "colonnes": ["Libellé", "Note", "2024", "2023"],
+  "markdown": "| Produits d'Exploitation | Notes | 2024 | 2023 |\n|---|---|---|---|\n| Revenus | 17 | 732 621 822 | 684 081 159 |\n...",
+  "texte": "ETAT DE RESULTAT (DT). Revenus (note 17) : 732 621 822 en 2024 vs 684 081 159 en 2023. Autres produits d'exploitation (note 18) : 13 635 090 en 2024 vs 13 068 582 en 2023. ...",
+}
+```
+
+Deux représentations :
+
+- **`markdown`** : destiné au contexte LLM. Lisible par
+  Gemini-3.5-flash-lite, préserve les colonnes et l'alignement.
+- **`texte`** : destiné à BM25 et aux embeddings denses.
+  Chaque cellule devient une phrase courte, les montants restent
+  isolés par entrées séparées, ce qui évite la fusion
+  inter-colonnes par la tokenisation V2.1.
+
+Métadonnées :
+
+- `titre` = libellé en haut du tableau (ex. « ETAT DE
+  RESULTAT »).
+- `unite` = capturée au titre ou dans le sous-titre (« Exprimé
+  en Dinar Tunisien », « Exprimé en dinars »).
+- `exercices` = années des colonnes de chiffres (liste).
+- `colonnes` = schéma pour permettre à un filtre futur de
+  cibler une colonne spécifique (ex. « colonne 2024 »).
+
+### §4. Intégration : chunks en plus ou à la place ?
+
+**Proposition** : **en plus**, pas à la place. Chaque page
+produit :
+
+- Un chunk `texte` (actuel, pdfplumber flux) — identique à
+  aujourd'hui.
+- Zéro ou plus de chunks `tableau` (Docling ou Camelot),
+  un par tableau détecté sur la page.
+
+Avantages :
+
+- Pas de régression du corpus actuel (les 247 chunks texte
+  restent indexés et les 31 Q d'origine gardent leur retrieval
+  V2 reproductible).
+- Les nouveaux chunks tableau augmentent le rappel sur les Q
+  chiffrées : BM25 voit chaque montant comme un token distinct
+  (pas de fusion).
+- Le filtre entreprise (§1 V2) s'applique tel quel.
+
+Inconvénients :
+
+- **Doublons** : un même montant apparaît dans le chunk texte
+  ET dans le chunk tableau de la même page. Impact sur le
+  retrieval dense (cosine) : deux chunks très proches
+  sémantiquement se classent voisins. **Supposé** : la fusion
+  RRF + top-5 absorbe cette redondance sans dégrader.
+  **Non vérifié**.
+- Taille du corpus : ~2× le nombre de chunks par page avec
+  tableau. Impact mémoire : minimal (~500 chunks total,
+  négligeable).
+
+### §4 bis — Effet attendu sur BM25 et les embeddings
+
+**BM25** :
+
+- **Constaté sur extraction** : Camelot et Docling séparent les
+  cellules. Chaque montant est un token isolé, donc l'IDF
+  local devient significative pour les montants rares.
+- **Supposé** : la Q13 ambigüe (« 732 621 822 » vs
+  « 746 256 912 ») serait mieux discriminée car les deux
+  montants sont dans des lignes Markdown distinctes, chacune
+  avec un libellé différent (« Revenus » vs « Total des
+  produits d'exploitation »). **À mesurer**.
+- **Supposé** : la fusion colonnes `732 595 162 684 081 159`
+  disparaît naturellement car les deux montants sont dans des
+  cellules séparées. **Attendu, confirmé par l'extraction.**
+
+**Embeddings denses (Gemini-embedding-2)** :
+
+- **Supposé** : un chunk Markdown structuré se représente
+  différemment d'un chunk texte brut. L'embedding d'une
+  question « Quel est le chiffre d'affaires de la SNMVT ? »
+  sera-t-il plus proche d'un chunk Markdown « | Revenus | ...
+  732 621 822 | 684 081 159 | » ou d'un chunk texte « Revenus
+  17 732 621 822 684 081 159 » ? **Non vérifié**. Gemini est
+  entraîné sur du Markdown (très présent dans les corpus web),
+  donc **supposé bénéfique** mais pas démontré.
+
+### §5. Critère §4 ex ante (écrit AVANT toute mesure)
+
+Trois critères simultanés sur les 31 Q :
+
+1. **Recall@5 strictement > 22/27** (strict supérieur à V2).
+2. **Bons résultats strictement > 26/31** (strict supérieur à V2).
+3. **Nouvelles fausses ≤ 1** (V2 avait 1 fausse = Q13).
+
+Si les trois critères ne sont pas simultanément satisfaits →
+**V4 non retenue**, on garde V2.
+
+MRR en départage uniquement en cas d'égalité sur les 3.
+
+**Pas de seuil sur le jeu de validation** : il reste utilisé
+une seule fois à la fin sur la config retenue, et ses chiffres
+sont mesure indépendante, pas critère de décision.
+
+### §6. Figés avant toute mesure
+
+- **Prompt V1.2 inchangé byte-à-byte** (SYSTEM_INSTRUCTION +
+  TEMPLATE_V1_2_USER).
+- **Retrieval V2.1/hybride_filtre inchangé** : filtre
+  entreprise, BM25 V2.1 (stop words NLTK FR, k1=1.5, b=0.75),
+  RRF k=60, top-50 avant fusion, tie-break chunk_id.
+- **Seul le CHUNKING change** : chunks tableau ajoutés aux
+  chunks texte existants.
+- **Jeu de validation (15 Q)** utilisé UNE SEULE FOIS à la fin
+  sur la config retenue.
+- **Outil d'extraction tableau** : à décider entre Docling et
+  Camelot en §7, mais figé avant toute mesure.
+
+### §7. Choix d'outil et pré-conditions
+
+**Préférence actuelle** : **Docling** (format Markdown
+clé-en-main, support scannés si besoin futur, MIT, pas de
+dépendance système Windows comme Ghostscript).
+
+Repli : **Camelot flavor=stream**, qualité équivalente sur
+notre corpus texte, pas de modèle à télécharger.
+
+Choix figé à la première ligne de code V4, avant toute mesure.
+Si mesure montre que l'outil retenu a un coin faible non vu
+en §2 (3 pages), la décision est tracée dans le journal mais
+l'outil reste figé pour la mesure §5.
+
+### §8. Distingue constaté vs supposé
+
+**CONSTATÉ dans §2 (mesures sur 3 pages)** :
+
+- pdfplumber actuel linéarise le texte et ne détecte
+  généralement pas les tableaux.
+- Camelot flavor=stream et Docling extraient les 3 tables
+  cibles avec une accuracy 95-100 % et des colonnes nettement
+  séparées.
+- La ligne pertinente de Q13 (`Revenus | 17 | 732 621 822 |
+  684 081 159`) est bien extraite par Camelot et Docling.
+- La fusion « 732 595 162 684 081 159 » disparaît dès que
+  l'extraction préserve les colonnes.
+
+**SUPPOSÉ (à vérifier par mesure V4)** :
+
+- Chunks tableau Markdown améliorent le retrieval BM25.
+- Les embeddings Gemini comprennent mieux le Markdown que le
+  flux linéarisé.
+- La coexistence (chunks texte + chunks tableau) n'introduit
+  pas de régression côté recall.
+- La disparition de la fusion token aide des Q réelles (val_02
+  ne gagne pas automatiquement ; voir §1).
+- Q13 : un meilleur chunk tableau page 5 permettra au LLM de
+  distinguer « Revenus » de « Total des produits
+  d'exploitation ».
+
+**HORS SCOPE V4** :
+
+- Q12, Q14, Q23, val_08 (abstentions inexpliquées) : problème
+  prompt, pas chunking.
+- val_02, val_06 : problème retrieval (page attendue hors
+  top-20), pas chunking.
+- Q13 : le vrai verrou est le retrieval (page 5 hors top-5 en
+  V2) et non le chunk. V4 peut aider si p. 5 revient dans le
+  top-5 grâce à un meilleur signal BM25 sur « Revenus », mais
+  ce n'est pas garanti.
+
+### §9. Risques listés
+
+- **Doublons chunks texte + tableau** peuvent faire remonter
+  deux variantes du même chunk dans le top-5, consommant le
+  budget LLM pour peu de nouvelle information.
+- **Dérive de Docling** : version 2.149 épinglée mais les
+  modèles TableFormer peuvent évoluer. Épingler aussi les
+  modèles si possible.
+- **Risque OOM** : Docling charge ~500 MB de modèles. À
+  surveiller sur machine 16 GB (V3 reranker consommait déjà
+  ~3 GB).
+- **Temps de chunking** : indexer tout le corpus avec Docling
+  (~247 pages) prendrait plusieurs minutes voire dizaines. À
+  cacher sur disque (chunking idempotent).
+
+### §10. Décisions figées pour V4
+
+- Prompt V1.2 inchangé.
+- Retrieval V2.1/hybride_filtre inchangé.
+- Chunks texte conservés + chunks tableau ajoutés en plus.
+- Format tableau = Markdown + métadonnées (`titre`, `unite`,
+  `exercices`, `colonnes`).
+- Outil : Docling (premier choix) ou Camelot (repli), figé
+  à la première ligne de code V4.
+- Critère §5 (R@5 strict > 22/27 ET bons résultats strict >
+  26/31 ET pas plus d'une fausse) écrit AVANT toute mesure.
+- Jeu de validation utilisé une seule fois à la fin.
+- Aucun code V4 écrit dans ce journal, aucun run V4 lancé.
+
+
