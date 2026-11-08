@@ -18,6 +18,10 @@ from __future__ import annotations
 
 import pytest
 
+import sys
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
 from bilanlens.reranker import (
     BATCH_SIZE_DEFAULT,
     LongueurExcedenteError,
@@ -25,8 +29,11 @@ from bilanlens.reranker import (
     MODEL_LICENSE,
     MODEL_NAME,
     MODEL_REVISION,
+    Reranker,
     RevisionMismatchError,
+    _extract_commit_hash,
     _scores_par_lots,
+    _valider_revision_chargee,
     reranker_top_k,
 )
 
@@ -254,8 +261,204 @@ def test_longueur_excedente_error_est_une_classe():
     assert issubclass(LongueurExcedenteError, Exception)
 
 
-def test_revision_mismatch_error_est_une_classe():
-    assert issubclass(RevisionMismatchError, Exception)
+# ------------------------------------------------------------------
+# _extract_commit_hash — source du SHA selon l'API transformers
+# ------------------------------------------------------------------
+
+def test_extract_commit_hash_depuis_attribut_direct():
+    obj = SimpleNamespace(_commit_hash=MODEL_REVISION)
+    assert _extract_commit_hash(obj) == MODEL_REVISION
+
+
+def test_extract_commit_hash_depuis_config():
+    obj = SimpleNamespace(
+        config=SimpleNamespace(_commit_hash=MODEL_REVISION),
+    )
+    assert _extract_commit_hash(obj) == MODEL_REVISION
+
+
+def test_extract_commit_hash_depuis_vocab_file_path_windows():
+    # Format réel observé dans le cache HuggingFace Windows
+    path = (
+        r"C:\Users\x\.cache\huggingface\hub"
+        rf"\models--BAAI--bge-reranker-v2-m3\snapshots\{MODEL_REVISION}"
+        r"\sentencepiece.bpe.model"
+    )
+    obj = SimpleNamespace(init_kwargs={"vocab_file": path})
+    assert _extract_commit_hash(obj) == MODEL_REVISION
+
+
+def test_extract_commit_hash_depuis_vocab_file_path_posix():
+    path = (
+        f"/home/x/.cache/huggingface/hub/models--BAAI--bge-reranker-v2-m3"
+        f"/snapshots/{MODEL_REVISION}/sentencepiece.bpe.model"
+    )
+    obj = SimpleNamespace(init_kwargs={"vocab_file": path})
+    assert _extract_commit_hash(obj) == MODEL_REVISION
+
+
+def test_extract_commit_hash_retourne_none_si_aucune_source():
+    obj = SimpleNamespace()
+    assert _extract_commit_hash(obj) is None
+
+
+def test_extract_commit_hash_retourne_none_si_hash_vide():
+    obj = SimpleNamespace(
+        _commit_hash="",
+        config=SimpleNamespace(_commit_hash=None),
+        init_kwargs={},
+    )
+    assert _extract_commit_hash(obj) is None
+
+
+# ------------------------------------------------------------------
+# _valider_revision_chargee — fail-fast anti-dérive
+# ------------------------------------------------------------------
+
+def test_valider_revision_leve_si_revision_vide():
+    obj = SimpleNamespace(_commit_hash=MODEL_REVISION)
+    with pytest.raises(RevisionMismatchError, match="SHA non vide"):
+        _valider_revision_chargee("", obj, obj)
+    with pytest.raises(RevisionMismatchError, match="SHA non vide"):
+        _valider_revision_chargee(None, obj, obj)
+
+
+def test_valider_revision_leve_si_aucun_hash_resoluble():
+    """Si ni le tokenizer ni le modèle n'exposent de hash, refus
+    de passer silencieusement."""
+    tokenizer = SimpleNamespace()  # aucun attribut
+    model = SimpleNamespace()
+    with pytest.raises(
+        RevisionMismatchError, match="Aucun commit hash",
+    ):
+        _valider_revision_chargee(MODEL_REVISION, tokenizer, model)
+
+
+def test_valider_revision_leve_si_tokenizer_hash_differe():
+    mauvais = "0" * 40
+    tokenizer = SimpleNamespace(_commit_hash=mauvais)
+    model = SimpleNamespace(_commit_hash=MODEL_REVISION)
+    with pytest.raises(
+        RevisionMismatchError, match="tokenizer",
+    ):
+        _valider_revision_chargee(MODEL_REVISION, tokenizer, model)
+
+
+def test_valider_revision_leve_si_model_hash_differe():
+    mauvais = "0" * 40
+    tokenizer = SimpleNamespace(_commit_hash=MODEL_REVISION)
+    model = SimpleNamespace(_commit_hash=mauvais)
+    with pytest.raises(RevisionMismatchError, match="model"):
+        _valider_revision_chargee(MODEL_REVISION, tokenizer, model)
+
+
+def test_valider_revision_ok_quand_les_deux_hashes_concordent():
+    tokenizer = SimpleNamespace(_commit_hash=MODEL_REVISION)
+    model = SimpleNamespace(_commit_hash=MODEL_REVISION)
+    # Ne doit PAS lever.
+    _valider_revision_chargee(MODEL_REVISION, tokenizer, model)
+
+
+def test_valider_revision_ok_si_un_seul_hash_resolu_et_concorde():
+    """Au moins l'un des deux suffit pour valider."""
+    tokenizer = SimpleNamespace(_commit_hash=MODEL_REVISION)
+    model = SimpleNamespace()  # pas de hash sur le modèle
+    _valider_revision_chargee(MODEL_REVISION, tokenizer, model)
+
+
+# ------------------------------------------------------------------
+# Reranker (intégration) : validation effective de la revision
+# ------------------------------------------------------------------
+
+@pytest.fixture
+def torch_mock(monkeypatch):
+    """Injecte un faux ``torch`` dans sys.modules pour que
+    ``import torch`` dans ``Reranker.__init__`` ne nécessite pas
+    torch réellement installé. ``torch.cuda.is_available()``
+    retourne False, device = "cpu"."""
+    mock = MagicMock()
+    mock.cuda.is_available.return_value = False
+    monkeypatch.setitem(sys.modules, "torch", mock)
+    return mock
+
+
+def test_reranker_leve_si_revision_vide_sans_dependances():
+    """Refus avant tout import lourd : la validation précède
+    ``from transformers import`` et ``import torch``. Donc ce
+    test passe même sans torch/transformers installés."""
+    with pytest.raises(
+        RevisionMismatchError, match="SHA non vide",
+    ):
+        Reranker(revision="")
+    with pytest.raises(
+        RevisionMismatchError, match="SHA non vide",
+    ):
+        Reranker(revision=None)
+
+
+def test_reranker_leve_revision_mismatch_si_hash_differe(torch_mock):
+    """Fail-fast à la construction si le modèle chargé a un SHA
+    différent de la revision demandée. Test via mocks, sans
+    appeler HuggingFace."""
+    tokenizer = MagicMock()
+    tokenizer._commit_hash = MODEL_REVISION
+    tokenizer.init_kwargs = {}
+    tokenizer.config = SimpleNamespace(_commit_hash=MODEL_REVISION)
+    model = MagicMock()
+    model._commit_hash = "0" * 40  # SHA explicitement différent
+    model.config = SimpleNamespace(_commit_hash="0" * 40)
+    with pytest.raises(RevisionMismatchError, match="model"):
+        Reranker(
+            revision=MODEL_REVISION,
+            _tokenizer=tokenizer, _model=model,
+        )
+
+
+def test_reranker_leve_si_commit_hash_absent_partout(torch_mock):
+    """Pas de passage silencieux : si ni tokenizer ni modèle
+    n'exposent de SHA résoluble (ex. cache manuellement édité,
+    transformers qui ne remplit plus ``_commit_hash``), on lève
+    plutôt que d'avancer sans vérification."""
+    # On explicite les attributs à None pour désactiver le hash
+    # résoluble (MagicMock auto-crée sinon des mocks truthy).
+    tokenizer = MagicMock()
+    tokenizer._commit_hash = None
+    tokenizer.init_kwargs = {}
+    tokenizer.config = SimpleNamespace(_commit_hash=None)
+    model = MagicMock()
+    model._commit_hash = None
+    model.config = SimpleNamespace(_commit_hash=None)
+    with pytest.raises(
+        RevisionMismatchError, match="Aucun commit hash",
+    ):
+        Reranker(
+            revision=MODEL_REVISION,
+            _tokenizer=tokenizer, _model=model,
+        )
+
+
+def test_reranker_ok_quand_hash_correspond(torch_mock):
+    """Pas d'exception quand tokenizer ET modèle rapportent la
+    même revision que demandée. ``_setup_torch`` passe via les
+    mocks (``model.eval()``, ``model.to()`` sont des MagicMock
+    no-op)."""
+    tokenizer = MagicMock()
+    tokenizer._commit_hash = MODEL_REVISION
+    tokenizer.init_kwargs = {}
+    tokenizer.config = SimpleNamespace(_commit_hash=MODEL_REVISION)
+    model = MagicMock()
+    model._commit_hash = MODEL_REVISION
+    model.config = SimpleNamespace(_commit_hash=MODEL_REVISION)
+    rk = Reranker(
+        revision=MODEL_REVISION,
+        _tokenizer=tokenizer, _model=model,
+    )
+    assert rk.revision == MODEL_REVISION
+    assert rk.device == "cpu"
+    # Les mocks ont été configurés pour le forward (mode eval
+    # appelé par __init__).
+    model.eval.assert_called_once()
+    model.to.assert_called_once_with("cpu")
 
 
 # ------------------------------------------------------------------

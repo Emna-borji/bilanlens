@@ -6,9 +6,19 @@ Licence du modèle : **Apache-2.0** (cf. carte modèle HuggingFace
 et `LICENSE` du dépôt BAAI/bge-reranker-v2-m3).
 
 Revision épinglée : variable de module `MODEL_REVISION`, hash SHA
-du commit HuggingFace figé (branch `main`). Le code lève à la
-construction si la revision diffère de celle téléchargée en cache
-(fail-fast anti-dérive).
+du commit HuggingFace figé (branch `main`). Le code **lève à la
+construction** si :
+
+- ``revision`` est vide ou ``None`` (refus de charger un modèle
+  non figé) ;
+- aucun des deux objets chargés (tokenizer et modèle) n'expose
+  un commit hash résoluble (ni via ``_commit_hash``, ni via
+  ``config._commit_hash``, ni via un chemin cache HuggingFace du
+  type ``snapshots/<sha>/``) ;
+- un commit hash est résolu et diffère de ``revision``.
+
+Toutes ces erreurs lèvent ``RevisionMismatchError`` — jamais de
+passage silencieux (fail-fast anti-dérive du modèle HF).
 
 Contexte max : 8192 tokens (natif du modèle). On passe les pages
 entières au reranker. Garde-fou : exception explicite
@@ -31,7 +41,18 @@ Usage minimal ::
 from __future__ import annotations
 
 import gc
+import re
 from typing import Callable, Protocol
+
+
+# ---------------------------------------------------------------------------
+# Détection de la revision HF chargée par transformers
+# ---------------------------------------------------------------------------
+# Pattern pour extraire le SHA 40-hex depuis un chemin HuggingFace du cache
+# local : ``.../models--X--Y/snapshots/<sha>/fichier``. C'est le format
+# standard de ``huggingface_hub``, stable d'une version de transformers à
+# l'autre et robuste aux séparateurs Windows (`\`) et POSIX (`/`).
+_SNAPSHOT_SHA_RE = re.compile(r"snapshots[\\/]([a-f0-9]{40})")
 
 
 # ---------------------------------------------------------------------------
@@ -100,8 +121,100 @@ class LongueurExcedenteError(RuntimeError):
 
 
 class RevisionMismatchError(RuntimeError):
-    """Levée à la construction si la revision téléchargée diffère
-    de ``MODEL_REVISION``. Prévient les dérives du modèle HF."""
+    """Levée à la construction par ``Reranker`` ou par
+    ``_valider_revision_chargee`` dans trois cas :
+
+    - **Revision vide/None** : on refuse d'instancier un reranker
+      sans pin explicite (``Reranker(revision="")`` ou
+      ``revision=None`` échouent ici).
+    - **Commit hash non résoluble** : ni le tokenizer ni le modèle
+      n'exposent un commit hash (via ``_commit_hash``, via
+      ``config._commit_hash``, ou via un chemin cache
+      ``snapshots/<sha>/`` dans leurs ``init_kwargs``). On préfère
+      lever qu'avancer sans pouvoir valider.
+    - **Commit hash différent** : le tokenizer OU le modèle
+      rapporte un SHA qui ne correspond pas à la revision demandée.
+
+    Fail-fast anti-dérive : prévient qu'un reload silencieux de
+    ``main`` ou qu'une version différente en cache soient utilisés
+    sans que l'appelant s'en aperçoive.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Validation de la revision HF chargée (utilitaires testables)
+# ---------------------------------------------------------------------------
+
+def _extract_commit_hash(obj) -> str | None:
+    """Tente d'extraire le commit hash HuggingFace depuis un objet
+    ``transformers`` (tokenizer ou modèle).
+
+    L'API transformers n'expose pas uniformément le SHA selon les
+    versions : on cherche donc dans plusieurs sources, dans l'ordre :
+
+    1. ``obj._commit_hash`` (anciennes versions transformers).
+    2. ``obj.config._commit_hash`` (modèles).
+    3. ``obj.init_kwargs["vocab_file"]`` (tokenizers) : le chemin
+       pointe dans le cache HuggingFace, qui contient
+       ``.../snapshots/<sha>/sentencepiece.bpe.model``.
+
+    Retourne ``None`` si aucune source ne permet d'extraire un SHA
+    40-hex. ``_valider_revision_chargee`` traite ce cas comme une
+    erreur (refus du passage silencieux).
+    """
+    direct = getattr(obj, "_commit_hash", None)
+    if direct:
+        return str(direct)
+    cfg = getattr(obj, "config", None)
+    if cfg is not None:
+        cfg_hash = getattr(cfg, "_commit_hash", None)
+        if cfg_hash:
+            return str(cfg_hash)
+    init_kwargs = getattr(obj, "init_kwargs", None) or {}
+    vocab_file = init_kwargs.get("vocab_file")
+    if vocab_file:
+        match = _SNAPSHOT_SHA_RE.search(str(vocab_file))
+        if match:
+            return match.group(1)
+    return None
+
+
+def _valider_revision_chargee(
+    revision: str, tokenizer, model,
+) -> None:
+    """Vérifie que la revision HuggingFace du modèle chargé
+    correspond à ``revision``. Lève ``RevisionMismatchError`` dans
+    les trois cas documentés par la classe d'exception.
+
+    Au moins l'un des deux objets (tokenizer ou modèle) doit
+    exposer un commit hash résoluble ; tous les hashes résolus
+    doivent concorder avec ``revision``.
+    """
+    if not revision:
+        raise RevisionMismatchError(
+            "revision doit être un SHA non vide. Passer "
+            "MODEL_REVISION ou un SHA explicite pour garantir un "
+            "modèle figé."
+        )
+    tokenizer_hash = _extract_commit_hash(tokenizer)
+    model_hash = _extract_commit_hash(model)
+    if tokenizer_hash is None and model_hash is None:
+        raise RevisionMismatchError(
+            f"Aucun commit hash n'est résoluble (ni sur le "
+            f"tokenizer, ni sur le modèle). Transformers n'expose "
+            f"pas ``_commit_hash`` et aucun chemin cache "
+            f"``snapshots/<sha>/`` n'a été trouvé. Impossible de "
+            f"valider le pin à la revision {revision}. "
+            f"Refus de continuer en silence (fail-fast "
+            f"anti-dérive)."
+        )
+    for nom, h in (("tokenizer", tokenizer_hash), ("model", model_hash)):
+        if h is not None and h != revision:
+            raise RevisionMismatchError(
+                f"Revision {nom} = {h!r} ne correspond pas à "
+                f"la revision demandée {revision!r}. Fail-fast "
+                f"anti-dérive du modèle HuggingFace."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -129,11 +242,28 @@ class Reranker:
     Paramètres
     ----------
     model_name : nom du modèle HuggingFace. Par défaut ``MODEL_NAME``.
-    revision : SHA du commit HF à charger. Par défaut ``MODEL_REVISION``.
-    device : "cuda", "cpu" ou "auto" (choix auto via `torch.cuda.is_available`).
+    revision : SHA du commit HF à charger. Par défaut
+        ``MODEL_REVISION``. **Doit être non vide** (sinon
+        ``RevisionMismatchError`` levée avant tout chargement).
+    device : "cuda", "cpu" ou "auto" (choix auto via
+        ``torch.cuda.is_available``).
     max_length : seuil appliqué avant chaque forward. Par défaut
         ``MAX_LENGTH`` (8192). Toute paire plus longue lève
         ``LongueurExcedenteError``.
+    batch_size : taille des lots internes de ``score_pairs``.
+
+    Validation de la revision chargée : après le chargement du
+    tokenizer et du modèle, ``_valider_revision_chargee`` compare
+    le commit hash HF du tokenizer et du modèle à ``revision``.
+    Si l'un diffère, ou si aucun hash n'est résoluble, une
+    ``RevisionMismatchError`` est levée AVANT toute opération
+    torch. Fail-fast anti-dérive.
+
+    Injection pour tests : ``_tokenizer`` et ``_model`` permettent
+    de passer des objets déjà construits (p.ex. mocks). Dans ce
+    cas, ``from transformers import ...`` n'est PAS exécuté — les
+    tests sans réseau peuvent couvrir la validation sans installer
+    ``transformers``.
 
     Idempotence et déterminisme :
     - Modèle en mode ``eval`` + ``torch.inference_mode`` pendant
@@ -149,29 +279,47 @@ class Reranker:
         device: str = "auto",
         max_length: int = MAX_LENGTH,
         batch_size: int = BATCH_SIZE_DEFAULT,
+        _tokenizer=None,
+        _model=None,
     ):
-        import torch
-        from transformers import (
-            AutoModelForSequenceClassification, AutoTokenizer,
-        )
+        # Refus précoce si revision vide — AVANT tout import lourd
+        # (torch / transformers). Permet de tester sans installer
+        # les dépendances.
+        if not revision:
+            raise RevisionMismatchError(
+                "revision doit être un SHA non vide. Passer "
+                "MODEL_REVISION ou un SHA explicite pour garantir "
+                "un modèle figé."
+            )
 
         self.model_name = model_name
         self.revision = revision
         self.max_length = max_length
         self.batch_size = batch_size
 
-        kwargs: dict = {}
-        if revision:
-            kwargs["revision"] = revision
+        if _tokenizer is not None:
+            self.tokenizer = _tokenizer
+        else:
+            from transformers import AutoTokenizer
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_name, revision=revision,
+            )
+        if _model is not None:
+            self.model = _model
+        else:
+            from transformers import AutoModelForSequenceClassification
+            self.model = AutoModelForSequenceClassification.from_pretrained(
+                model_name, revision=revision,
+            )
 
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name, **kwargs,
-        )
-        self.model = AutoModelForSequenceClassification.from_pretrained(
-            model_name, **kwargs,
-        )
+        # Fail-fast anti-dérive : vérifie que la revision chargée
+        # correspond à ``revision``. Lève RevisionMismatchError si
+        # hash absent ou différent. Avant toute opération torch.
+        _valider_revision_chargee(revision, self.tokenizer, self.model)
+
+        # Device setup (après validation : le modèle est confirmé).
+        import torch
         self.model.eval()  # pas de dropout, déterministe
-
         if device == "auto":
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
