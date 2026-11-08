@@ -238,6 +238,137 @@ usage, basculer sur :
   `bilanlens.embeddings.Encodeur` est faite pour accueillir cet
   adapter sans toucher à `index.py`.
 
+## Benchmark RAG — B0 à V3 (évaluation étape par étape)
+
+Après l'application Streamlit, le projet comprend une seconde partie :
+évaluer un pipeline **RAG + LLM** (modèle Gemini-3.5-flash-lite) sur
+**31 questions** rédigées à partir de 6 rapports annuels BVMT 2024
+(SOTUVER, SFBT, Ciments de Bizerte, Délice Holding, Monoprix
+individuel, Monoprix consolidé).
+
+Les 31 questions couvrent 5 catégories : extraction, calcul,
+comparaison, texte_annexes, sans_reponse. Elles sont dans
+`data/benchmark/questions.jsonl` et validées automatiquement par
+`tests/test_benchmark.py` (chaque réponse chiffrée vérifiée dans le
+PDF source ; chaque question sans_reponse vérifiée absente du PDF).
+
+Chaque étape est documentée dans `docs/journal.md` avec les
+décisions prises, les erreurs corrigées, et les mesures.
+
+### Résultats des 6 versions
+
+Deux lignes B0 mesurent la base sans retrieval. Les versions V1, V1.1
+et V1.2 testent **le prompt** sur un même retrieval dense top-5
+(Chroma + embeddings Gemini). V2 change **le retrieval** en gardant
+le prompt V1.2. V3 teste un reranker cross-encoder sur les candidats
+V2.
+
+**Chiffres sources** : `results/scores*.jsonl` (bons résultats,
+justes, fausses) et `docs/journal.md` (Recall@5 et MRR).
+
+| Version | Bons résultats | Justes | Fausses | Recall@5 | MRR |
+|---|---|---|---|---|---|
+| B0-strict | 4/31 | 0 | 0 | n/a | n/a |
+| B0-libre | 5/31 | 1 | 6 | n/a | n/a |
+| V1 | 20/31 | 16 | 1 | 19/27 | 0,543 |
+| V1.1 | 22/31 | 18 | 4 | 19/27 | 0,543 |
+| V1.2 | 24/31 | 20 | 0 | 19/27 | 0,543 |
+| **V2** | **26/31** | **22** | **1** | **22/27** | **0,714** |
+| V3 (reranker) | **non retenue** | — | — | 21/27 (retrieval) | 0,517 (retrieval) |
+
+Lectures :
+
+- « Bons résultats » = classes `juste` + `abstention_correcte`.
+- « Fausses » = `fausse_recall_ok` + `fausse_recall_ko` + `reponse_a_tort`.
+- Recall@5 et MRR sont mesurés sur les **27 questions** avec page
+  attendue (hors 4 sans_reponse). B0 n'a pas de retrieval, d'où `n/a`.
+- V1, V1.1 et V1.2 partagent le même retrieval → mêmes valeurs
+  Recall@5 et MRR. Seul le prompt change entre les trois.
+- **V3 (reranker `BAAI/bge-reranker-v2-m3`)** a été **écartée par le
+  critère §4** du plan V3 (Recall@5 strictement > 22/27). Résultat
+  mesuré : 21/27 ≤ 22/27, et MRR en chute (0,517 vs 0,714). Aucun
+  run LLM V3 lancé ; on garde V2 (`v2.1/hybride_filtre`).
+
+## Validation (15 questions nouvelles)
+
+Pour tester si les gains observés sur les 31 Q d'origine se
+généralisent, un jeu de validation de **15 questions nouvelles**
+(`data/benchmark/questions_validation.jsonl`) a été rédigé à partir
+des 6 mêmes rapports **avant tout run LLM sur ce jeu** (commit
+`cb5c394`, 2026-11-06, horodatage = preuve d'ex ante).
+
+Distribution : 4 extractions, 4 calculs (dont 2 autonomies sur
+sociétés non testées), 2 comparaisons, 3 texte_annexes, 2 sans_reponse
+(dont 1 sans société nommée). Au moins une Q « Monoprix » sans
+qualifier individuel / consolidé.
+
+### Résultats sur le jeu de validation
+
+| Version | Bons résultats | Justes | Fausses | Recall@5 | MRR |
+|---|---|---|---|---|---|
+| V1.2 | 13/15 | 11 | 0 | 11/13 | 0,629 |
+| V2 | 14/15 | 12 | 0 | 11/13 | 0,635 |
+
+Chiffres sources : `results/scores_v1_2_validation.jsonl` et
+`results/scores_v2_validation.jsonl`.
+
+### Limites connues du jeu de validation
+
+Documentées dans `docs/journal.md` (entrée 2026-11-06 soir 4, corrigée
+2026-11-07) :
+
+- **15 questions donnent une TENDANCE, pas une PREUVE.** L'écart V2
+  vs V1.2 sur validation (+1 Q) est dans la variance d'échantillon.
+- **Le jeu est peut-être plus FACILE que les 31 Q d'origine.**
+  5 Q sur 15 reposent sur des totaux de bilan (dernière ligne du
+  bilan actif / passif), faciles à retrouver.
+- **val_02 et val_06 sont `juste` malgré un recall@5 KO strict.**
+  Le modèle répond par arithmétique intra-page (addition de
+  sous-totaux) ou par lecture croisée (total CP + passifs = total
+  actif).
+- **La seule Q « Monoprix » sans qualifier est une sans_reponse**
+  (val_14). Elle teste la robustesse du filtre ambigu mais **ne
+  teste pas** le choix du modèle entre bilan individuel et bilan
+  consolidé sur une donnée réelle. Angle mort à combler dans un
+  benchmark futur.
+- **val_11 et val_12 portent sur le même sujet** (crise Ciments de
+  Bizerte 2023-2024, pages différentes). Un seul topic métier
+  couvert deux fois.
+
+## Scripts du benchmark
+
+Toutes les commandes partent du Python du venv local :
+`.\.venv\Scripts\python.exe` (Windows) ou `.venv/bin/python`
+(macOS / Linux). Les runs LLM nécessitent `GEMINI_API_KEY` dans
+`.env`.
+
+| Script | Rôle |
+|---|---|
+| `scripts/evaluate_b0.py` | Run B0 : LLM sans retrieval, prompt strict ou libre (`--variante strict\|libre`). Écrit `results/b0.jsonl`. |
+| `scripts/evaluate_v1.py` | Run V1 : retrieval dense Chroma top-5 + prompt V1. Écrit `results/v1.jsonl` + `results/retrieval_top20.jsonl`. |
+| `scripts/evaluate_v1_1.py` | Run V1.1 : V1 + consigne « fais le calcul exact ». Reconstruit le contexte V1 (zéro appel Chroma). |
+| `scripts/evaluate_v1_2.py` | Run V1.2 : V1.1 + 2 règles anti-ambigüité (total passif, sens de variation). |
+| `scripts/benchmark_retrieval.py` | Compare 10 configurations retrieval **sans LLM** (dense, BM25, hybride RRF × V2 / V2.1 tokenisation). Produit `results/retrieval_compare.jsonl`. |
+| `scripts/evaluate_v2.py` | Run V2 : pipeline `v2.1/hybride_filtre` (filtre entreprise + BM25 stop-words FR + fusion RRF) + prompt V1.2. |
+| `scripts/evaluate_validation.py` | Runs V1.2 + V2 sur le jeu de validation (15 Q). |
+| `scripts/benchmark_rerank.py` | Benchmark V3 reranker (BAAI/bge-reranker-v2-m3) **sans LLM**. V3 écartée par le critère §4 ; aucun `evaluate_v3.py` n'a été écrit. |
+| `scripts/score.py` | Scoring : `--mode {v1\|v1-1\|v1-2\|v2\|validation\|compare\|rebuild-context}`. |
+
+### Dépendances optionnelles pour le benchmark reranker V3
+
+V3 n'a pas été retenue, donc `torch`, `transformers` et `psutil` sont
+**commentés** dans `requirements.txt`. Pour reproduire le benchmark
+V3 localement :
+
+```bash
+pip install --index-url https://download.pytorch.org/whl/cpu torch==2.15.0+cpu
+pip install transformers==5.22.2 psutil==7.2.2
+```
+
+Le modèle `BAAI/bge-reranker-v2-m3` (≈ 1,1 GB, Apache-2.0, revision
+`953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e`) est téléchargé
+automatiquement dans `~/.cache/huggingface/hub/` au premier lancement.
+
 ## Licence
 
 MIT — voir [LICENSE](LICENSE).
